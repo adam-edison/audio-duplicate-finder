@@ -479,8 +479,13 @@ async function runFixMetadata(): Promise<void> {
 }
 
 async function runAll(): Promise<void> {
-  console.log(chalk.cyan('\n🎵 Audio Duplicate Finder\n'));
-  console.log(chalk.gray('This will scan, find duplicates, review, and execute deletions.\n'));
+  console.log(chalk.cyan('\n🎵 Audio Duplicate Manager\n'));
+  console.log(chalk.gray('Complete workflow:'));
+  console.log(chalk.gray('  1. Scan - Discover files and extract metadata'));
+  console.log(chalk.gray('  2. Fix Metadata - Fill in missing artist/title/genre/album'));
+  console.log(chalk.gray('  3. Find Duplicates - Detect duplicate files'));
+  console.log(chalk.gray('  4. Review - Rules-based auto-decisions + manual review'));
+  console.log(chalk.gray('  5. Execute - Delete duplicates with double confirmation\n'));
 
   const proceed = await confirm({
     message: 'Start with scanning?',
@@ -492,6 +497,15 @@ async function runAll(): Promise<void> {
   }
 
   await runScan();
+
+  const fixMeta = await confirm({
+    message: '\nFix missing metadata before finding duplicates?',
+    default: true,
+  });
+
+  if (fixMeta) {
+    await runFixMetadata();
+  }
 
   const findDupes = await confirm({
     message: '\nContinue to find duplicates?',
