@@ -97,15 +97,46 @@ export async function promptForMetadata(
     console.log(`💡 ${inferred.source} (${inferred.confidence} confidence)`);
   }
 
-  console.log('');
+  const aiPreview: string[] = [];
+
+  if (missingFields.includes('artist') && inferred.artist) {
+    aiPreview.push(`Artist: ${inferred.artist}`);
+  }
+
+  if (missingFields.includes('title') && inferred.title) {
+    aiPreview.push(`Title: ${inferred.title}`);
+  }
+
+  if (missingFields.includes('genre') && inferred.genre) {
+    aiPreview.push(`Genre: ${inferred.genre}`);
+  }
+
+  if (missingFields.includes('album') && inferred.album) {
+    aiPreview.push(`Album: ${inferred.album}`);
+  }
+
+  const hasAiSuggestions = aiPreview.length > 0;
+
+  if (hasAiSuggestions) {
+    console.log('AI suggestions: ' + aiPreview.join(' | '));
+    console.log('');
+  }
+
+  const choices = [];
+
+  if (hasAiSuggestions) {
+    choices.push({ name: '✨ Accept AI suggestions', value: 'accept-ai' });
+  }
+
+  choices.push(
+    { name: '✏️  Edit and save metadata', value: 'edit' },
+    { name: '⏭️  Skip this file', value: 'skip' },
+    { name: '🚪 Quit', value: 'quit' }
+  );
 
   const actionChoice = await select({
     message: 'What would you like to do?',
-    choices: [
-      { name: '✅ Edit and save metadata', value: 'edit' },
-      { name: '⏭️  Skip this file', value: 'skip' },
-      { name: '🚪 Quit', value: 'quit' },
-    ],
+    choices,
   });
 
   if (actionChoice === 'skip') {
@@ -114,6 +145,17 @@ export async function promptForMetadata(
 
   if (actionChoice === 'quit') {
     return { metadata: { artist: '', title: '', genre: '', album: '' }, action: 'quit' };
+  }
+
+  if (actionChoice === 'accept-ai') {
+    const metadata: MusicMetadata = {
+      artist: missingFields.includes('artist') ? (inferred.artist ?? existingMetadata.artist ?? '') : (existingMetadata.artist ?? ''),
+      title: missingFields.includes('title') ? (inferred.title ?? existingMetadata.title ?? '') : (existingMetadata.title ?? ''),
+      genre: missingFields.includes('genre') ? (inferred.genre ?? existingMetadata.genre ?? '') : (existingMetadata.genre ?? ''),
+      album: missingFields.includes('album') ? (inferred.album ?? existingMetadata.album ?? '') : (existingMetadata.album ?? ''),
+    };
+
+    return { metadata, action: 'save' };
   }
 
   const metadata: MusicMetadata = {
