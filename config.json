@@ -1,0 +1,28 @@
+{
+  "scanPaths": ["~", "/Volumes"],
+  "excludePatterns": [
+    "node_modules",
+    ".git",
+    "Library/Caches",
+    "__pycache__",
+    ".Trash",
+    "*.app/Contents"
+  ],
+  "durationToleranceSeconds": 5,
+  "duplicateScoreThreshold": 40,
+  "supportedExtensions": [
+    "mp3",
+    "flac",
+    "wav",
+    "aac",
+    "ogg",
+    "m4a",
+    "aiff",
+    "aif",
+    "alac",
+    "wma",
+    "opus",
+    "ape",
+    "wv"
+  ]
+}
