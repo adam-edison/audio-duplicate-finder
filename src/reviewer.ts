@@ -1,14 +1,26 @@
 import { select, confirm } from '@inquirer/prompts';
 import chalk from 'chalk';
-import type { AudioFileMetadata, DuplicateGroup, Decision, DecisionsFile } from './types.js';
+import type {
+  AudioFileMetadata,
+  DuplicateGroup,
+  Decision,
+  DecisionsFile,
+  ExtendedDecision,
+} from './types.js';
 import { formatFileSize, formatDuration } from './metadata.js';
+
+export interface ReviewOptions {
+  label?: string;
+}
 
 export async function reviewDuplicates(
   groups: DuplicateGroup[],
   files: Map<string, AudioFileMetadata>,
-  existingDecisions: Decision[]
+  existingDecisions: Decision[],
+  options: ReviewOptions = {}
 ): Promise<DecisionsFile> {
   const decisions: Decision[] = [...existingDecisions];
+  const label = options.label ?? 'Pair';
 
   const decidedFiles = new Set<string>();
 
@@ -39,7 +51,7 @@ export async function reviewDuplicates(
 
     console.log(chalk.yellow(`\n${'─'.repeat(60)}`));
     console.log(
-      chalk.yellow(`Pair ${reviewed} of ${totalPending} (${pendingPairs.length} remaining)`)
+      chalk.yellow(`${label} ${reviewed} of ${totalPending} (${pendingPairs.length} remaining)`)
     );
     console.log(chalk.gray(`Confidence: ${pair.confidence}%`));
     console.log(chalk.gray(`Match reasons: ${pair.matchReasons.join(', ')}`));
@@ -133,7 +145,7 @@ function displayGroupFiles(group: DuplicateGroup, files: Map<string, AudioFileMe
 async function promptForDecision(
   group: DuplicateGroup,
   files: Map<string, AudioFileMetadata>
-): Promise<Decision | null> {
+): Promise<ExtendedDecision | null> {
   const choices: Array<{ name: string; value: string }> = [];
 
   for (let i = 0; i < group.files.length; i++) {
@@ -187,6 +199,8 @@ async function promptForDecision(
       keep: [],
       delete: [],
       notDuplicates: false,
+      decisionType: 'manual',
+      ruleApplied: 'manual-review',
     };
   }
 
@@ -196,6 +210,8 @@ async function promptForDecision(
       keep: group.files,
       delete: [],
       notDuplicates: true,
+      decisionType: 'manual',
+      ruleApplied: 'manual-review',
     };
   }
 
@@ -214,6 +230,8 @@ async function promptForDecision(
       keep: [],
       delete: [],
       notDuplicates: false,
+      decisionType: 'manual',
+      ruleApplied: 'manual-review',
     };
   }
 
@@ -222,6 +240,8 @@ async function promptForDecision(
     keep: [keepPath],
     delete: deletePaths,
     notDuplicates: false,
+    decisionType: 'manual',
+    ruleApplied: 'manual-review',
   };
 }
 

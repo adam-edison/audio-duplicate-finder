@@ -108,3 +108,33 @@ export interface DeletionLog {
   executedAt: string;
   entries: DeletionLogEntry[];
 }
+
+export interface MetadataFixState {
+  lastProcessedIndex: number;
+  fixedCount: number;
+  skippedCount: number;
+  startedAt: string;
+  resumedAt?: string;
+}
+
+export interface DuplicateRules {
+  confidenceThreshold: number;
+  maxDurationDiffSeconds: number;
+  preferLossless: boolean;
+  preferHigherBitrate: boolean;
+  pathPriority: string[];
+}
+
+export type DecisionType = 'auto' | 'manual';
+
+export type RuleApplied =
+  | 'lossless-over-lossy'
+  | 'higher-bitrate'
+  | 'path-priority'
+  | 'manual-review'
+  | null;
+
+export interface ExtendedDecision extends Decision {
+  decisionType: DecisionType;
+  ruleApplied: RuleApplied;
+}

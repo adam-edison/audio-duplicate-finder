@@ -8,6 +8,7 @@
     "find-dupes": "tsx src/index.ts find-dupes",
     "review": "tsx src/index.ts review",
     "execute": "tsx src/index.ts execute",
+    "fix-metadata": "tsx src/index.ts fix-metadata",
     "build": "tsc",
     "typecheck": "tsc --noEmit"
   },

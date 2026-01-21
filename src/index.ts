@@ -18,7 +18,30 @@ import type {
   DuplicatesFile,
   DecisionsFile,
   DeletionLog,
+  MetadataFixState,
+  Decision,
 } from './types.js';
+import {
+  findFilesWithMissingMetadata,
+  fixMetadataInteractive,
+} from './metadata-fixer.js';
+import {
+  loadRules,
+  saveRules,
+  promptForRules,
+  promptRulesAction,
+  extractUniqueDirectories,
+} from './rules.js';
+import {
+  applyRulesToGroups,
+  summarizeAutoDecisions,
+} from './auto-decider.js';
+import {
+  calculateDeletionSummary,
+  displayPreDeletionSummary,
+  promptViewFullList,
+  promptDoubleConfirmation,
+} from './review-summary.js';
 
 const DATA_DIR = join(process.cwd(), 'data');
 const CONFIG_FILE = join(process.cwd(), 'config.json');
@@ -27,6 +50,7 @@ const SCAN_STATE_FILE = join(DATA_DIR, '.scan-state.json');
 const DUPLICATES_FILE = join(DATA_DIR, 'duplicates.json');
 const DECISIONS_FILE = join(DATA_DIR, 'decisions.json');
 const DELETION_LOG_FILE = join(DATA_DIR, 'deletion-log.json');
+const FIX_STATE_FILE = join(DATA_DIR, '.fix-state.json');
 
 const DEFAULT_CONFIG: Config = {
   scanPaths: [homedir(), '/Volumes'],
@@ -267,18 +291,66 @@ async function runReview(): Promise<void> {
     // No existing decisions
   }
 
+  const existingDecisionIds = new Set(existingDecisions.decisions.map((d) => d.groupId));
+
+  let rules = await loadRules();
+
+  if (rules) {
+    const action = await promptRulesAction(rules);
+
+    if (action === 'reconfigure') {
+      const directories = extractUniqueDirectories(files);
+      rules = await promptForRules(directories);
+      await saveRules(rules);
+    }
+  } else {
+    console.log(chalk.yellow('No duplicate resolution rules configured yet.\n'));
+
+    const directories = extractUniqueDirectories(files);
+    rules = await promptForRules(directories);
+    await saveRules(rules);
+  }
+
   const sortedGroups = [...duplicates.groups].sort(
     (a, b) => b.confidence - a.confidence
   );
 
-  const result = await reviewDuplicates(
-    sortedGroups,
-    files,
-    existingDecisions.decisions
-  );
+  console.log(chalk.cyan('\nApplying rules to duplicate groups...'));
 
-  await writeFile(DECISIONS_FILE, JSON.stringify(result, null, 2));
-  summarizeDecisions(result.decisions);
+  const autoResult = applyRulesToGroups(sortedGroups, rules, files, existingDecisionIds);
+  summarizeAutoDecisions(autoResult);
+
+  const allDecisions: Decision[] = [
+    ...existingDecisions.decisions,
+    ...autoResult.autoDecisions,
+  ];
+
+  if (autoResult.manualGroups.length > 0) {
+    console.log(chalk.yellow(`\n${autoResult.manualGroups.length} pairs need manual review\n`));
+
+    const result = await reviewDuplicates(
+      autoResult.manualGroups,
+      files,
+      allDecisions,
+      { label: 'Manual Review' }
+    );
+
+    allDecisions.push(
+      ...result.decisions.filter(
+        (d) => !allDecisions.some((existing) => existing.groupId === d.groupId)
+      )
+    );
+  } else {
+    console.log(chalk.green('\nAll pairs were auto-decided!'));
+  }
+
+  const decisionsFile: DecisionsFile = {
+    reviewedAt: new Date().toISOString(),
+    decisions: allDecisions,
+  };
+
+  await writeFile(DECISIONS_FILE, JSON.stringify(decisionsFile, null, 2));
+  summarizeDecisions(allDecisions);
 
   console.log(chalk.gray(`\nDecisions saved to: ${DECISIONS_FILE}`));
   console.log(chalk.gray('Run "npm run execute" to execute deletions'));
@@ -295,27 +367,20 @@ async function runExecute(): Promise<void> {
   }
 
   const decisions: DecisionsFile = JSON.parse(decisionsData);
-  const filesToDelete = decisions.decisions.flatMap((d) => d.delete);
+  const files = await loadScannedFiles();
 
-  if (filesToDelete.length === 0) {
+  const summary = calculateDeletionSummary(decisions.decisions, files);
+
+  if (summary.totalFiles === 0) {
     console.log(chalk.yellow('No files marked for deletion.'));
     return;
   }
 
-  console.log(chalk.yellow(`About to delete ${filesToDelete.length} files\n`));
+  displayPreDeletionSummary(summary, files);
 
-  for (const file of filesToDelete.slice(0, 5)) {
-    console.log(chalk.gray(`  - ${file}`));
-  }
+  await promptViewFullList(summary.filesToDelete);
 
-  if (filesToDelete.length > 5) {
-    console.log(chalk.gray(`  ... and ${filesToDelete.length - 5} more`));
-  }
-
-  const confirmed = await confirm({
-    message: chalk.red(`Proceed with deletion?`),
-    default: false,
-  });
+  const confirmed = await promptDoubleConfirmation(summary.totalFiles);
 
   if (!confirmed) {
     console.log(chalk.yellow('\nDeletion cancelled.'));
@@ -328,6 +393,89 @@ async function runExecute(): Promise<void> {
   await writeFile(DELETION_LOG_FILE, JSON.stringify(log, null, 2));
 
   console.log(chalk.gray(`\nLog saved to: ${DELETION_LOG_FILE}`));
+}
+
+async function loadFixState(): Promise<MetadataFixState | null> {
+  try {
+    const data = await readFile(FIX_STATE_FILE, 'utf-8');
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
+async function saveFixState(state: MetadataFixState): Promise<void> {
+  await writeFile(FIX_STATE_FILE, JSON.stringify(state, null, 2));
+}
+
+async function runFixMetadata(): Promise<void> {
+  console.log(chalk.cyan('\n🔧 Fix Missing Metadata\n'));
+
+  const files = await loadScannedFiles();
+
+  if (files.size === 0) {
+    console.log(chalk.yellow('No scan results found. Run "npm run scan" first.'));
+    return;
+  }
+
+  const filesWithMissing = findFilesWithMissingMetadata(files);
+
+  if (filesWithMissing.length === 0) {
+    console.log(chalk.green('All files have artist and title metadata!'));
+    return;
+  }
+
+  const existingState = await loadFixState();
+  let shouldResume = false;
+
+  if (existingState && existingState.lastProcessedIndex > 0) {
+    const remaining = filesWithMissing.length - existingState.lastProcessedIndex;
+
+    console.log(
+      chalk.yellow(
+        `Found existing progress: ${existingState.fixedCount} fixed, ${remaining} remaining`
+      )
+    );
+
+    shouldResume = await confirm({
+      message: 'Resume from where you left off?',
+      default: true,
+    });
+
+    if (!shouldResume) {
+      await writeFile(FIX_STATE_FILE, '{}');
+    }
+  }
+
+  const result = await fixMetadataInteractive(
+    filesWithMissing,
+    files,
+    shouldResume ? existingState : null
+  );
+
+  await saveFixState(result.state);
+
+  if (result.updatedFiles.size > 0) {
+    console.log(chalk.gray('\nUpdating scan results...'));
+
+    const allData = await readFile(SCAN_RESULTS_FILE, 'utf-8');
+    const lines = allData.split('\n').filter(Boolean);
+    const updatedLines: string[] = [];
+
+    for (const line of lines) {
+      const metadata = JSON.parse(line) as AudioFileMetadata;
+      const updated = result.updatedFiles.get(metadata.path);
+
+      if (updated) {
+        updatedLines.push(JSON.stringify(updated));
+      } else {
+        updatedLines.push(line);
+      }
+    }
+
+    await writeFile(SCAN_RESULTS_FILE, updatedLines.join('\n') + '\n');
+    console.log(chalk.green(`Updated ${result.updatedFiles.size} entries in scan results`));
+  }
 }
 
 async function runAll(): Promise<void> {
@@ -396,6 +544,10 @@ switch (command) {
 
   case 'execute':
     runExecute().catch(console.error);
+    break;
+
+  case 'fix-metadata':
+    runFixMetadata().catch(console.error);
     break;
 
   default:
