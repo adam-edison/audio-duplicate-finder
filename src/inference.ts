@@ -15,16 +15,19 @@ export async function inferMetadata(
   const prompt = `Analyze this music file and infer the missing metadata.
 
 Filename analysis:
-- Possible artist from filename: ${parsed.possibleArtist ?? 'unknown'}
-- Possible title from filename: ${parsed.possibleTitle ?? 'unknown'}
+- Part before separator: ${parsed.possibleArtist ?? 'unknown'}
+- Part after separator: ${parsed.possibleTitle ?? 'unknown'}
 
 ${searchContext}
 
 Missing fields that need values: ${missingFields.join(', ')}
 
 IMPORTANT RULES:
-1. TRUST THE FILENAME. If the filename clearly shows "Artist - Title" pattern, USE those values directly. Do not second-guess obvious patterns.
-2. For artist/title: The filename is your PRIMARY source. YouTube results are only for confirmation or genre hints.
+1. TRUST THE FILENAME. If the filename shows "X - Y" pattern, those ARE the artist and title. Do not second-guess.
+2. The pattern could be "Artist - Title" OR "Title - Artist". Use context clues to determine which:
+   - If one part looks like a name/band name, that's likely the artist
+   - If one part looks like a song phrase, that's likely the title
+   - YouTube results can help confirm which is which
 3. For genre: Use YouTube results, artist style, or title keywords to infer. Use standard genres: Rock, Pop, Hip-Hop, R&B, Electronic, Jazz, Classical, Country, Metal, Indie, Folk, Blues, Soul, Funk, Reggae, Latin, Soundtrack, Ambient, etc.
 4. If artist/title are clearly in the filename, confidence should be "high" even if YouTube results are unrelated.
 5. YouTube results showing tutorials or unrelated content does NOT invalidate a clear filename pattern.
