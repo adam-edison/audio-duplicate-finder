@@ -84,7 +84,8 @@
     ".vol",
     ".dropbox",
     ".dropbox.cache",
-    "repositories"
+    "repositories",
+    "parrot.py*"
   ],
   "durationToleranceSeconds": 5,
   "duplicateScoreThreshold": 40,
