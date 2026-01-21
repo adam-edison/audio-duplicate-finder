@@ -240,10 +240,7 @@ async function runFindDupes(): Promise<void> {
   console.log(chalk.gray(`\nResults saved to: ${DUPLICATES_FILE}`));
 
   if (groups.length > 0) {
-    const totalFiles = groups.reduce((sum, g) => sum + g.files.length, 0);
-    const potentialDupes = totalFiles - groups.length;
-
-    console.log(chalk.yellow(`\nPotential duplicates: ${potentialDupes} files`));
+    console.log(chalk.yellow(`\nFound ${groups.length} duplicate pairs to review`));
     console.log(chalk.gray('Run "npm run review" to review and decide on duplicates'));
   }
 }
@@ -270,8 +267,12 @@ async function runReview(): Promise<void> {
     // No existing decisions
   }
 
+  const sortedGroups = [...duplicates.groups].sort(
+    (a, b) => b.confidence - a.confidence
+  );
+
   const result = await reviewDuplicates(
-    duplicates.groups,
+    sortedGroups,
     files,
     existingDecisions.decisions
   );

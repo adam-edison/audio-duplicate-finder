@@ -1,10 +1,10 @@
-import { dirname } from 'node:path';
 import levenshtein from 'fast-levenshtein';
 import type { AudioFileMetadata, DuplicateGroup, Config } from './types.js';
 import { countFilledTags, getQualityScore } from './metadata.js';
 
 interface MatchResult {
-  score: number;
+  isMatch: boolean;
+  confidence: number;
   reasons: string[];
 }
 
@@ -13,51 +13,32 @@ export function findDuplicates(
   config: Config
 ): DuplicateGroup[] {
   const fileList = Array.from(files.values());
-  const matches = new Map<string, Set<string>>();
+  const pairs: DuplicateGroup[] = [];
+  let pairId = 1;
 
   for (let i = 0; i < fileList.length; i++) {
     for (let j = i + 1; j < fileList.length; j++) {
       const result = compareFiles(fileList[i], fileList[j], config);
 
-      if (result.score < config.duplicateScoreThreshold) {
+      if (!result.isMatch) {
         continue;
       }
 
       const pathA = fileList[i].path;
       const pathB = fileList[j].path;
+      const suggestedKeep = selectBestFile([pathA, pathB], files);
 
-      if (!matches.has(pathA)) {
-        matches.set(pathA, new Set());
-      }
-      if (!matches.has(pathB)) {
-        matches.set(pathB, new Set());
-      }
-
-      matches.get(pathA)!.add(pathB);
-      matches.get(pathB)!.add(pathA);
+      pairs.push({
+        id: `pair-${pairId++}`,
+        confidence: result.confidence,
+        files: [pathA, pathB],
+        matchReasons: result.reasons,
+        suggestedKeep,
+      });
     }
   }
 
-  const groups = buildTransitiveClusters(matches);
-  const duplicateGroups: DuplicateGroup[] = [];
-  let groupId = 1;
-
-  for (const group of groups) {
-    const groupFiles = Array.from(group);
-    const avgConfidence = calculateGroupConfidence(groupFiles, files, config);
-    const matchReasons = collectMatchReasons(groupFiles, files, config);
-    const suggestedKeep = selectBestFile(groupFiles, files);
-
-    duplicateGroups.push({
-      id: `group-${groupId++}`,
-      confidence: avgConfidence,
-      files: groupFiles,
-      matchReasons,
-      suggestedKeep,
-    });
-  }
-
-  return duplicateGroups.sort((a, b) => b.confidence - a.confidence);
+  return pairs.sort((a, b) => b.confidence - a.confidence);
 }
 
 function compareFiles(
@@ -65,40 +46,40 @@ function compareFiles(
   b: AudioFileMetadata,
   config: Config
 ): MatchResult {
-  let score = 0;
   const reasons: string[] = [];
-
-  const durationMatch = checkDurationMatch(a, b, config.durationToleranceSeconds);
-  if (durationMatch) {
-    score += 40;
-    reasons.push('duration');
-  }
+  let confidence = 0;
 
   const artistTitleMatch = checkArtistTitleMatch(a, b);
+  const filenameMatch = checkFilenameMatch(a, b);
+  const durationMatch = checkDurationMatch(a, b, config.durationToleranceSeconds);
+
+  if (!artistTitleMatch && !filenameMatch) {
+    return { isMatch: false, confidence: 0, reasons: [] };
+  }
+
   if (artistTitleMatch) {
-    score += 30;
+    confidence += 50;
     reasons.push('artist+title');
   }
 
-  const filenameMatch = checkFilenameMatch(a, b);
   if (filenameMatch) {
-    score += 20;
+    confidence += 30;
     reasons.push('filename');
   }
 
+  if (durationMatch) {
+    confidence += 15;
+    reasons.push('duration');
+  }
+
   const albumMatch = checkAlbumMatch(a, b);
+
   if (albumMatch) {
-    score += 10;
+    confidence += 5;
     reasons.push('album');
   }
 
-  const differentLocation = checkDifferentLocation(a, b);
-  if (differentLocation) {
-    score += 10;
-    reasons.push('different-location');
-  }
-
-  return { score, reasons };
+  return { isMatch: true, confidence, reasons };
 }
 
 function checkDurationMatch(
@@ -155,7 +136,7 @@ function checkFilenameMatch(a: AudioFileMetadata, b: AudioFileMetadata): boolean
   const distance = levenshtein.get(normalizedA, normalizedB);
   const similarity = 1 - distance / maxLen;
 
-  return similarity >= 0.8;
+  return similarity >= 0.9;
 }
 
 function checkAlbumMatch(a: AudioFileMetadata, b: AudioFileMetadata): boolean {
@@ -164,31 +145,6 @@ function checkAlbumMatch(a: AudioFileMetadata, b: AudioFileMetadata): boolean {
   }
 
   return normalizeString(a.album) === normalizeString(b.album);
-}
-
-function checkDifferentLocation(a: AudioFileMetadata, b: AudioFileMetadata): boolean {
-  const rootA = getRootFolder(a.path);
-  const rootB = getRootFolder(b.path);
-
-  return rootA !== rootB;
-}
-
-function getRootFolder(path: string): string {
-  const parts = path.split('/').filter(Boolean);
-
-  if (parts.length < 2) {
-    return path;
-  }
-
-  if (parts[0] === 'Volumes' && parts.length >= 2) {
-    return `/${parts[0]}/${parts[1]}`;
-  }
-
-  if (parts[0] === 'Users' && parts.length >= 3) {
-    return `/${parts[0]}/${parts[1]}/${parts[2]}`;
-  }
-
-  return `/${parts[0]}`;
 }
 
 function normalizeString(str: string): string {
@@ -221,7 +177,6 @@ interface ParsedFilename {
 
 function parseFilenameForComparison(filename: string): ParsedFilename {
   const withoutExt = filename.replace(/\.[^.]+$/, '');
-
   const separators = [' - ', ' – ', ' — ', '_-_', ' _ '];
 
   for (const sep of separators) {
@@ -238,106 +193,6 @@ function parseFilenameForComparison(filename: string): ParsedFilename {
   }
 
   return { artist: null, title: null };
-}
-
-function buildTransitiveClusters(matches: Map<string, Set<string>>): Set<string>[] {
-  const visited = new Set<string>();
-  const clusters: Set<string>[] = [];
-
-  for (const path of matches.keys()) {
-    if (visited.has(path)) {
-      continue;
-    }
-
-    const cluster = new Set<string>();
-    const queue = [path];
-
-    while (queue.length > 0) {
-      const current = queue.shift()!;
-
-      if (visited.has(current)) {
-        continue;
-      }
-
-      visited.add(current);
-      cluster.add(current);
-
-      const neighbors = matches.get(current);
-
-      if (!neighbors) {
-        continue;
-      }
-
-      for (const neighbor of neighbors) {
-        if (!visited.has(neighbor)) {
-          queue.push(neighbor);
-        }
-      }
-    }
-
-    if (cluster.size > 1) {
-      clusters.push(cluster);
-    }
-  }
-
-  return clusters;
-}
-
-function calculateGroupConfidence(
-  groupFiles: string[],
-  files: Map<string, AudioFileMetadata>,
-  config: Config
-): number {
-  let totalScore = 0;
-  let comparisons = 0;
-
-  for (let i = 0; i < groupFiles.length; i++) {
-    for (let j = i + 1; j < groupFiles.length; j++) {
-      const a = files.get(groupFiles[i]);
-      const b = files.get(groupFiles[j]);
-
-      if (!a || !b) {
-        continue;
-      }
-
-      const result = compareFiles(a, b, config);
-      totalScore += result.score;
-      comparisons++;
-    }
-  }
-
-  if (comparisons === 0) {
-    return 0;
-  }
-
-  return Math.round(totalScore / comparisons);
-}
-
-function collectMatchReasons(
-  groupFiles: string[],
-  files: Map<string, AudioFileMetadata>,
-  config: Config
-): string[] {
-  const allReasons = new Set<string>();
-
-  for (let i = 0; i < groupFiles.length; i++) {
-    for (let j = i + 1; j < groupFiles.length; j++) {
-      const a = files.get(groupFiles[i]);
-      const b = files.get(groupFiles[j]);
-
-      if (!a || !b) {
-        continue;
-      }
-
-      const result = compareFiles(a, b, config);
-
-      for (const reason of result.reasons) {
-        allReasons.add(reason);
-      }
-    }
-  }
-
-  return Array.from(allReasons);
 }
 
 function selectBestFile(

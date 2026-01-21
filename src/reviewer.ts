@@ -9,24 +9,45 @@ export async function reviewDuplicates(
   existingDecisions: Decision[]
 ): Promise<DecisionsFile> {
   const decisions: Decision[] = [...existingDecisions];
-  const reviewedIds = new Set(existingDecisions.map((d) => d.groupId));
-  const pendingGroups = groups.filter((g) => !reviewedIds.has(g.id));
 
-  console.log(chalk.cyan(`\nReviewing ${pendingGroups.length} duplicate groups`));
+  const decidedFiles = new Set<string>();
+
+  for (const d of existingDecisions) {
+    for (const f of d.keep) {
+      decidedFiles.add(f);
+    }
+
+    for (const f of d.delete) {
+      decidedFiles.add(f);
+    }
+  }
+
+  const getPendingPairs = () =>
+    groups.filter((g) => !g.files.some((f) => decidedFiles.has(f)));
+
+  let pendingPairs = getPendingPairs();
+  const totalPending = pendingPairs.length;
+
+  console.log(chalk.cyan(`\nReviewing ${totalPending} duplicate pairs`));
   console.log(chalk.gray(`(${existingDecisions.length} already reviewed)\n`));
 
-  for (let i = 0; i < pendingGroups.length; i++) {
-    const group = pendingGroups[i];
+  let reviewed = 0;
+
+  while (pendingPairs.length > 0) {
+    const pair = pendingPairs[0];
+    reviewed++;
 
     console.log(chalk.yellow(`\n${'─'.repeat(60)}`));
-    console.log(chalk.yellow(`Group ${i + 1} of ${pendingGroups.length} (${group.id})`));
-    console.log(chalk.gray(`Confidence: ${group.confidence}%`));
-    console.log(chalk.gray(`Match reasons: ${group.matchReasons.join(', ')}`));
+    console.log(
+      chalk.yellow(`Pair ${reviewed} of ${totalPending} (${pendingPairs.length} remaining)`)
+    );
+    console.log(chalk.gray(`Confidence: ${pair.confidence}%`));
+    console.log(chalk.gray(`Match reasons: ${pair.matchReasons.join(', ')}`));
     console.log();
 
-    displayGroupFiles(group, files);
+    displayGroupFiles(pair, files);
 
-    const decision = await promptForDecision(group, files);
+    const decision = await promptForDecision(pair, files);
 
     if (decision === null) {
       console.log(chalk.yellow('\nSaving progress and exiting...'));
@@ -35,7 +56,17 @@ export async function reviewDuplicates(
 
     decisions.push(decision);
 
-    console.log(chalk.green(`Decision recorded for ${group.id}`));
+    for (const f of decision.keep) {
+      decidedFiles.add(f);
+    }
+
+    for (const f of decision.delete) {
+      decidedFiles.add(f);
+    }
+
+    console.log(chalk.green(`Decision recorded for ${pair.id}`));
+
+    pendingPairs = getPendingPairs();
   }
 
   return {
