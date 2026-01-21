@@ -46,10 +46,24 @@ const DEFAULT_CONFIG: Config = {
   ],
 };
 
+function expandPath(path: string): string {
+  if (path === '~' || path.startsWith('~/')) {
+    return path.replace('~', homedir());
+  }
+
+  return path;
+}
+
 async function loadConfig(): Promise<Config> {
   try {
     const data = await readFile(CONFIG_FILE, 'utf-8');
-    return { ...DEFAULT_CONFIG, ...JSON.parse(data) };
+    const config = { ...DEFAULT_CONFIG, ...JSON.parse(data) };
+
+    if (config.scanPaths) {
+      config.scanPaths = config.scanPaths.map(expandPath);
+    }
+
+    return config;
   } catch {
     console.error(chalk.red(`Config file not found: ${CONFIG_FILE}`));
     console.error(chalk.gray('Please ensure config.json exists in the project root.'));
