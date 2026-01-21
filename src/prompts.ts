@@ -23,19 +23,28 @@ function truncate(str: string, maxLen: number): string {
 async function promptForField(
   field: string,
   suggestedValue: string | null,
+  existingValue: string | null,
   recentValues: string[],
   commonValues: string[] = []
 ): Promise<string> {
   const choices: Array<{ name: string; value: string }> = [];
+  const seen = new Set<string>();
 
-  if (suggestedValue) {
+  if (existingValue) {
+    choices.push({
+      name: `📎 Keep current: ${existingValue}`,
+      value: existingValue,
+    });
+    seen.add(existingValue.toLowerCase());
+  }
+
+  if (suggestedValue && !seen.has(suggestedValue.toLowerCase())) {
     choices.push({
       name: `✨ AI suggestion: ${suggestedValue}`,
       value: suggestedValue,
     });
+    seen.add(suggestedValue.toLowerCase());
   }
-
-  const seen = new Set<string>(suggestedValue ? [suggestedValue.toLowerCase()] : []);
 
   for (const recent of recentValues.slice(0, 5)) {
     if (seen.has(recent.toLowerCase())) {
@@ -75,7 +84,7 @@ async function promptForField(
   if (selected === '__custom__') {
     return input({
       message: `Enter ${field}:`,
-      default: suggestedValue ?? undefined,
+      default: existingValue ?? suggestedValue ?? undefined,
     });
   }
 
@@ -97,31 +106,25 @@ export async function promptForMetadata(
     console.log(`💡 ${inferred.source} (${inferred.confidence} confidence)`);
   }
 
-  const aiPreview: string[] = [];
+  const resolvedArtist = missingFields.includes('artist') ? inferred.artist : existingMetadata.artist;
+  const resolvedTitle = missingFields.includes('title') ? inferred.title : existingMetadata.title;
+  const resolvedGenre = missingFields.includes('genre') ? inferred.genre : existingMetadata.genre;
+  const resolvedAlbum = missingFields.includes('album') ? inferred.album : existingMetadata.album;
 
-  if (missingFields.includes('artist') && inferred.artist) {
-    aiPreview.push(`   Artist: ${inferred.artist}`);
-  }
+  const hasAiSuggestions = missingFields.some((f) => {
+    if (f === 'artist') return inferred.artist;
+    if (f === 'title') return inferred.title;
+    if (f === 'genre') return inferred.genre;
+    if (f === 'album') return inferred.album;
+    return false;
+  });
 
-  if (missingFields.includes('title') && inferred.title) {
-    aiPreview.push(`   Title:  ${inferred.title}`);
-  }
-
-  if (missingFields.includes('genre') && inferred.genre) {
-    aiPreview.push(`   Genre:  ${inferred.genre}`);
-  }
-
-  if (missingFields.includes('album') && inferred.album) {
-    aiPreview.push(`   Album:  ${inferred.album}`);
-  }
-
-  const hasAiSuggestions = aiPreview.length > 0;
-
-  if (hasAiSuggestions) {
-    console.log('✨ AI suggestions:');
-    console.log(aiPreview.join('\n'));
-    console.log('');
-  }
+  console.log('\n📋 Current + AI suggestions:');
+  console.log(`   Artist: ${resolvedArtist || '(empty)'}${missingFields.includes('artist') && inferred.artist ? ' ✨' : ''}`);
+  console.log(`   Title:  ${resolvedTitle || '(empty)'}${missingFields.includes('title') && inferred.title ? ' ✨' : ''}`);
+  console.log(`   Genre:  ${resolvedGenre || '(empty)'}${missingFields.includes('genre') && inferred.genre ? ' ✨' : ''}`);
+  console.log(`   Album:  ${resolvedAlbum || '(empty)'}${missingFields.includes('album') && inferred.album ? ' ✨' : ''}`);
+  console.log('');
 
   const choices = [];
 
@@ -150,54 +153,50 @@ export async function promptForMetadata(
 
   if (actionChoice === 'accept-ai') {
     const metadata: MusicMetadata = {
-      artist: missingFields.includes('artist') ? (inferred.artist ?? existingMetadata.artist ?? '') : (existingMetadata.artist ?? ''),
-      title: missingFields.includes('title') ? (inferred.title ?? existingMetadata.title ?? '') : (existingMetadata.title ?? ''),
-      genre: missingFields.includes('genre') ? (inferred.genre ?? existingMetadata.genre ?? '') : (existingMetadata.genre ?? ''),
-      album: missingFields.includes('album') ? (inferred.album ?? existingMetadata.album ?? '') : (existingMetadata.album ?? ''),
+      artist: resolvedArtist ?? '',
+      title: resolvedTitle ?? '',
+      genre: resolvedGenre ?? '',
+      album: resolvedAlbum ?? '',
     };
 
     return { metadata, action: 'save' };
   }
 
   const metadata: MusicMetadata = {
-    artist: existingMetadata.artist ?? '',
-    title: existingMetadata.title ?? '',
-    genre: existingMetadata.genre ?? '',
-    album: existingMetadata.album ?? '',
+    artist: '',
+    title: '',
+    genre: '',
+    album: '',
   };
 
-  if (missingFields.includes('artist')) {
-    metadata.artist = await promptForField(
-      'artist',
-      inferred.artist,
-      getRecentArtists(cache)
-    );
-  }
+  metadata.artist = await promptForField(
+    'artist',
+    inferred.artist,
+    existingMetadata.artist ?? null,
+    getRecentArtists(cache)
+  );
 
-  if (missingFields.includes('title')) {
-    metadata.title = await promptForField(
-      'title',
-      inferred.title,
-      []
-    );
-  }
+  metadata.title = await promptForField(
+    'title',
+    inferred.title,
+    existingMetadata.title ?? null,
+    []
+  );
 
-  if (missingFields.includes('genre')) {
-    metadata.genre = await promptForField(
-      'genre',
-      inferred.genre,
-      getRecentGenres(cache),
-      COMMON_GENRES
-    );
-  }
+  metadata.genre = await promptForField(
+    'genre',
+    inferred.genre,
+    existingMetadata.genre ?? null,
+    getRecentGenres(cache),
+    COMMON_GENRES
+  );
 
-  if (missingFields.includes('album')) {
-    metadata.album = await promptForField(
-      'album',
-      inferred.album,
-      []
-    );
-  }
+  metadata.album = await promptForField(
+    'album',
+    inferred.album,
+    existingMetadata.album ?? null,
+    []
+  );
 
   console.log('\n📋 Summary:');
   console.log(`   Artist: ${metadata.artist || '(empty)'}`);
