@@ -1,6 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
-import { select, checkbox, confirm, input } from '@inquirer/prompts';
+import { select, confirm, input } from '@inquirer/prompts';
 import chalk from 'chalk';
 import type { DuplicateRules, AudioFileMetadata, ScoringWeights } from './types.js';
 
@@ -104,16 +104,29 @@ export async function promptPathPriority(
   );
   console.log(chalk.gray('First selected = highest priority\n'));
 
-  const choices = directories.map((dir) => ({
-    name: dir,
-    value: dir,
-  }));
+  const selected: string[] = [];
+  const remaining = [...directories];
 
-  const selected = await checkbox({
-    message: 'Select directories to prioritize (in order):',
-    choices,
-    pageSize: 15,
-  });
+  while (remaining.length > 0) {
+    const choices = [
+      { name: chalk.green('✓ Done selecting'), value: '__done__' },
+      ...remaining.map((dir) => ({ name: dir, value: dir })),
+    ];
+
+    const priority = selected.length + 1;
+    const choice = await select({
+      message: `Select priority #${priority} directory:`,
+      choices,
+      pageSize: 15,
+    });
+
+    if (choice === '__done__') {
+      break;
+    }
+
+    selected.push(choice);
+    remaining.splice(remaining.indexOf(choice), 1);
+  }
 
   return selected;
 }
