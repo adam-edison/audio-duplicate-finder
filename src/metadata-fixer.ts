@@ -103,32 +103,50 @@ export async function fixMetadataInteractive(
   console.log(chalk.gray('Press Ctrl+C to quit and save progress\n'));
 
   const fetchedResults: Map<number, FetchedResult> = new Map();
+  const inFlight: Map<number, Promise<FetchedResult>> = new Map();
+  let fetcherIndex = startIndex;
+  const PARALLEL_FETCHES = 5;
 
-  const runFetcher = async (): Promise<void> => {
-    for (let idx = startIndex; idx < filesWithMissing.length; idx++) {
-      const result = await fetchFile(filesWithMissing[idx]);
-      fetchedResults.set(idx, result);
+  const prefetchNext = (): void => {
+    while (inFlight.size < PARALLEL_FETCHES && fetcherIndex < filesWithMissing.length) {
+      const idx = fetcherIndex;
+      fetcherIndex++;
+
+      const promise = fetchFile(filesWithMissing[idx]);
+      inFlight.set(idx, promise);
+
+      promise
+        .then((result) => {
+          fetchedResults.set(idx, result);
+          inFlight.delete(idx);
+          prefetchNext();
+        })
+        .catch(() => {
+          inFlight.delete(idx);
+          prefetchNext();
+        });
     }
   };
 
-  runFetcher();
+  prefetchNext();
 
   for (let i = startIndex; i < filesWithMissing.length; i++) {
     const file = filesWithMissing[i];
+    const remaining = filesWithMissing.length - i;
+    const prefetched = fetchedResults.size;
 
-    console.log(chalk.yellow(`\nFile ${i + 1} of ${filesWithMissing.length}`));
+    console.log(chalk.yellow(`\nFile ${i + 1} of ${filesWithMissing.length} (${remaining} left, ${prefetched} prefetched)`));
 
     let fetched = fetchedResults.get(i);
 
+    if (!fetched && inFlight.has(i)) {
+      console.log(chalk.gray('Waiting for AI...'));
+      fetched = await inFlight.get(i);
+    }
+
     if (!fetched) {
-      const spinner = ora('Analyzing with AI...').start();
-
-      while (!fetchedResults.has(i)) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-
-      spinner.stop();
-      fetched = fetchedResults.get(i)!;
+      console.log(chalk.gray('Analyzing...'));
+      fetched = await fetchFile(file);
     }
 
     console.log(chalk.gray(`Missing: ${fetched.missingFields.join(', ')}`));

@@ -40,8 +40,7 @@ export async function searchYouTube(query: string): Promise<SearchResult[]> {
     }
 
     return results;
-  } catch (error) {
-    console.error('Search failed:', error);
+  } catch {
     return [];
   }
 }
@@ -75,8 +74,7 @@ export async function searchWeb(query: string): Promise<SearchResult[]> {
     }
 
     return results;
-  } catch (error) {
-    console.error('Web search failed:', error);
+  } catch {
     return [];
   }
 }

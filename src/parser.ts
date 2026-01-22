@@ -23,15 +23,7 @@ const TRACK_NUMBER_PATTERN = /^(\d{1,3}[\.\-\s])/;
 export function parseFilename(filePath: string): ParsedFilename {
   const filename = basename(filePath, extname(filePath));
 
-  let cleaned = filename;
-
-  cleaned = cleaned.replace(TRACK_NUMBER_PATTERN, '');
-
-  for (const pattern of NOISE_PATTERNS) {
-    cleaned = cleaned.replace(pattern, ' ');
-  }
-
-  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+  let cleaned = filename.replace(TRACK_NUMBER_PATTERN, '');
 
   let possibleArtist: string | null = null;
   let possibleTitle: string | null = null;
@@ -39,8 +31,7 @@ export function parseFilename(filePath: string): ParsedFilename {
   const separators = [' - ', ' – ', ' — ', ' _ ', ' by '];
 
   for (const sep of separators) {
-    const lowerCleaned = cleaned.toLowerCase();
-    const sepIndex = lowerCleaned.indexOf(sep.toLowerCase());
+    const sepIndex = cleaned.toLowerCase().indexOf(sep.toLowerCase());
 
     if (sepIndex === -1) {
       continue;
@@ -50,6 +41,12 @@ export function parseFilename(filePath: string): ParsedFilename {
     possibleTitle = cleaned.slice(sepIndex + sep.length).trim();
     break;
   }
+
+  for (const pattern of NOISE_PATTERNS) {
+    cleaned = cleaned.replace(pattern, ' ');
+  }
+
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
 
   const searchQuery = cleaned || filename;
 

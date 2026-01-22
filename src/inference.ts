@@ -1,7 +1,4 @@
-import { exec } from 'node:child_process';
-import { promisify } from 'node:util';
-
-const execAsync = promisify(exec);
+import { spawn } from 'node:child_process';
 import type { InferredMetadata } from './types.js';
 import type { SearchResult } from './search.js';
 import type { ParsedFilename } from './parser.js';
@@ -18,6 +15,46 @@ export interface BatchFileInfo {
 
 export interface BatchInferredMetadata extends InferredMetadata {
   index: number;
+}
+
+function runClaude(prompt: string, timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('claude', ['-p', prompt], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    proc.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    const timeout = setTimeout(() => {
+      proc.kill();
+      reject(new Error('Timeout'));
+    }, timeoutMs);
+
+    proc.on('close', (code) => {
+      clearTimeout(timeout);
+
+      if (code === 0) {
+        resolve(stdout);
+        return;
+      }
+
+      reject(new Error(`Exit code ${code}: ${stderr}`));
+    });
+
+    proc.on('error', (err) => {
+      clearTimeout(timeout);
+      reject(err);
+    });
+  });
 }
 
 export async function inferMetadataBatch(
@@ -81,12 +118,7 @@ Respond with a JSON array only, no other text:
 ]`;
 
   try {
-    const { stdout } = await execAsync(`claude -p ${JSON.stringify(prompt)}`, {
-      encoding: 'utf-8',
-      maxBuffer: 10 * 1024 * 1024,
-      timeout: 120000,
-    });
-
+    const stdout = await runClaude(prompt, 120000);
     const jsonMatch = stdout.match(/\[[\s\S]*\]/);
 
     if (!jsonMatch) {
@@ -105,9 +137,7 @@ Respond with a JSON array only, no other text:
         source: item.source,
       });
     }
-  } catch (error) {
-    console.error('Batch AI inference failed, falling back to filename parsing:', error);
-
+  } catch {
     for (const file of files) {
       results.set(file.index, {
         artist: file.parsed.possibleArtist,
@@ -125,49 +155,15 @@ Respond with a JSON array only, no other text:
 
 export async function inferMetadata(
   parsed: ParsedFilename,
-  searchResults: SearchResult[],
+  _searchResults: SearchResult[],
   missingFields: string[]
 ): Promise<InferredMetadata> {
-  const searchContext = searchResults.length > 0
-    ? `YouTube search results for "${parsed.searchQuery}":\n${searchResults.map((r, i) => `${i + 1}. ${r.title}`).join('\n')}`
-    : 'No search results available.';
-
-  const prompt = `Analyze this music file and infer the missing metadata.
-
-Filename analysis:
-- Part before separator: ${parsed.possibleArtist ?? 'unknown'}
-- Part after separator: ${parsed.possibleTitle ?? 'unknown'}
-
-${searchContext}
-
-Missing fields that need values: ${missingFields.join(', ')}
-
-IMPORTANT RULES:
-1. TRUST THE FILENAME. If the filename shows "X - Y" pattern, those ARE the artist and title. Do not second-guess.
-2. The pattern could be "Artist - Title" OR "Title - Artist". Use context clues to determine which:
-   - If one part looks like a name/band name, that's likely the artist
-   - If one part looks like a song phrase, that's likely the title
-   - YouTube results can help confirm which is which
-3. For genre: Use YouTube results, artist style, or title keywords to infer. Use standard genres: Rock, Pop, Hip-Hop, R&B, Electronic, Jazz, Classical, Country, Metal, Indie, Folk, Blues, Soul, Funk, Reggae, Latin, Soundtrack, Ambient, etc.
-4. If artist/title are clearly in the filename, confidence should be "high" even if YouTube results are unrelated.
-5. YouTube results showing tutorials or unrelated content does NOT invalidate a clear filename pattern.
-
-Respond in this exact JSON format only, no other text:
-{
-  "artist": "artist name or null if cannot determine",
-  "title": "song title or null if cannot determine",
-  "genre": "genre or null if cannot determine",
-  "album": "album name or null if cannot determine",
-  "confidence": "high/medium/low",
-  "source": "brief explanation of how you determined this"
-}`;
+  const prompt = `Infer missing metadata for: ${parsed.possibleArtist ?? '?'} - ${parsed.possibleTitle ?? '?'}
+Missing: ${missingFields.join(', ')}
+JSON only: {"artist":"...","title":"...","genre":"...","album":null,"confidence":"high/medium/low","source":"..."}`;
 
   try {
-    const { stdout } = await execAsync(`claude -p ${JSON.stringify(prompt)}`, {
-      encoding: 'utf-8',
-      maxBuffer: 1024 * 1024,
-    });
-
+    const stdout = await runClaude(prompt, 60000);
     const jsonMatch = stdout.match(/\{[\s\S]*\}/);
 
     if (!jsonMatch) {
@@ -175,9 +171,7 @@ Respond in this exact JSON format only, no other text:
     }
 
     return JSON.parse(jsonMatch[0]) as InferredMetadata;
-  } catch (error) {
-    console.error('AI inference failed:', error);
-
+  } catch {
     return {
       artist: parsed.possibleArtist,
       title: parsed.possibleTitle,
