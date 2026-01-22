@@ -1,21 +1,21 @@
 import { readFile, writeFile } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
-import { select, confirm, input } from '@inquirer/prompts';
+import { join } from 'node:path';
+import { select, input } from '@inquirer/prompts';
 import chalk from 'chalk';
-import type { DuplicateRules, AudioFileMetadata, ScoringWeights } from './types.js';
+import type { DuplicateRules, RuleName } from './types.js';
 
 const CONFIG_FILE = join(process.cwd(), 'config.json');
 
+const ALL_RULES: { name: RuleName; label: string; description: string }[] = [
+  { name: 'lossless', label: 'Lossless format', description: 'Keep FLAC/WAV over MP3/AAC' },
+  { name: 'bitrate', label: 'Higher bitrate', description: 'Keep higher quality encoding' },
+  { name: 'metadata', label: 'Better metadata', description: 'Keep file with more complete tags' },
+];
+
 const DEFAULT_RULES: DuplicateRules = {
   confidenceThreshold: 70,
-  scoreDifferenceThreshold: 10,
-  weights: {
-    lossless: 40,
-    bitrate: 25,
-    pathPriority: 20,
-    metadataQuality: 15,
-  },
-  pathPriority: [],
+  ruleOrder: ['lossless', 'bitrate', 'metadata'],
+  destinationDir: '',
 };
 
 export async function loadRules(): Promise<DuplicateRules | null> {
@@ -28,12 +28,11 @@ export async function loadRules(): Promise<DuplicateRules | null> {
       return null;
     }
 
-    if (!rules.weights) {
+    if (!rules.ruleOrder) {
       return {
         confidenceThreshold: rules.confidenceThreshold ?? DEFAULT_RULES.confidenceThreshold,
-        scoreDifferenceThreshold: rules.scoreDifferenceThreshold ?? DEFAULT_RULES.scoreDifferenceThreshold,
-        weights: DEFAULT_RULES.weights,
-        pathPriority: rules.pathPriority ?? [],
+        ruleOrder: DEFAULT_RULES.ruleOrder,
+        destinationDir: rules.destinationDir ?? '',
       };
     }
 
@@ -57,179 +56,47 @@ export async function saveRules(rules: DuplicateRules): Promise<void> {
   await writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
-export function extractUniqueDirectories(
-  files: Map<string, AudioFileMetadata>
-): string[] {
-  const dirs = new Set<string>();
+async function promptRuleOrder(): Promise<RuleName[]> {
+  console.log(chalk.cyan('\n📋 Configure Rule Priority'));
+  console.log(chalk.gray('Select rules in order of importance. First rule that can decide wins.\n'));
 
-  for (const file of files.values()) {
-    const dir = dirname(file.path);
-    dirs.add(dir);
-  }
-
-  const sortedDirs = Array.from(dirs).sort();
-  const uniqueParents = new Map<string, string>();
-
-  for (const dir of sortedDirs) {
-    const parts = dir.split('/');
-
-    for (let i = 1; i <= parts.length; i++) {
-      const partial = parts.slice(0, i).join('/');
-
-      if (!uniqueParents.has(partial)) {
-        uniqueParents.set(partial, dir);
-      }
-    }
-  }
-
-  const topLevel: string[] = [];
-  const seenPrefixes = new Set<string>();
-
-  for (const dir of sortedDirs) {
-    let isChild = false;
-
-    for (const prefix of seenPrefixes) {
-      if (dir.startsWith(prefix + '/')) {
-        isChild = true;
-        break;
-      }
-    }
-
-    if (!isChild) {
-      topLevel.push(dir);
-      seenPrefixes.add(dir);
-    }
-  }
-
-  return topLevel.slice(0, 20);
-}
-
-export async function promptPathPriority(
-  directories: string[]
-): Promise<string[]> {
-  if (directories.length === 0) {
-    return [];
-  }
-
-  console.log(chalk.cyan('\nPath Priority Configuration'));
-  console.log(
-    chalk.gray(
-      'Select directories in order of preference. Files in higher-priority directories will be kept.'
-    )
-  );
-  console.log(chalk.gray('First selected = highest priority\n'));
-
-  const selected: string[] = [];
-  const remaining = [...directories];
+  const selected: RuleName[] = [];
+  const remaining = [...ALL_RULES];
 
   while (remaining.length > 0) {
     const choices = [
       { name: chalk.green('✓ Done selecting'), value: '__done__' },
-      ...remaining.map((dir) => ({ name: dir, value: dir })),
+      ...remaining.map((r) => ({
+        name: `${r.label} - ${chalk.gray(r.description)}`,
+        value: r.name,
+      })),
     ];
 
     const priority = selected.length + 1;
     const choice = await select({
-      message: `Select priority #${priority} directory:`,
+      message: `Select rule #${priority}:`,
       choices,
-      pageSize: 15,
     });
 
     if (choice === '__done__') {
       break;
     }
 
-    selected.push(choice);
-    remaining.splice(remaining.indexOf(choice), 1);
+    selected.push(choice as RuleName);
+    const idx = remaining.findIndex((r) => r.name === choice);
+    remaining.splice(idx, 1);
+  }
+
+  if (selected.length === 0) {
+    return DEFAULT_RULES.ruleOrder;
   }
 
   return selected;
 }
 
-async function promptForWeights(): Promise<ScoringWeights> {
-  console.log(chalk.cyan('\n📊 Configure Scoring Weights'));
-  console.log(chalk.gray('Weights must add up to 100%. Higher weight = more important factor.\n'));
-
-  while (true) {
-    const losslessInput = await input({
-      message: 'Lossless format weight (FLAC/WAV over MP3):',
-      default: '40',
-      validate: (value) => {
-        const num = parseInt(value, 10);
-
-        if (isNaN(num) || num < 0 || num > 100) {
-          return 'Please enter a number between 0 and 100';
-        }
-
-        return true;
-      },
-    });
-
-    const bitrateInput = await input({
-      message: 'Higher bitrate weight:',
-      default: '25',
-      validate: (value) => {
-        const num = parseInt(value, 10);
-
-        if (isNaN(num) || num < 0 || num > 100) {
-          return 'Please enter a number between 0 and 100';
-        }
-
-        return true;
-      },
-    });
-
-    const pathPriorityInput = await input({
-      message: 'Path priority weight (preferred directories):',
-      default: '20',
-      validate: (value) => {
-        const num = parseInt(value, 10);
-
-        if (isNaN(num) || num < 0 || num > 100) {
-          return 'Please enter a number between 0 and 100';
-        }
-
-        return true;
-      },
-    });
-
-    const metadataQualityInput = await input({
-      message: 'Metadata quality weight (complete tags):',
-      default: '15',
-      validate: (value) => {
-        const num = parseInt(value, 10);
-
-        if (isNaN(num) || num < 0 || num > 100) {
-          return 'Please enter a number between 0 and 100';
-        }
-
-        return true;
-      },
-    });
-
-    const lossless = parseInt(losslessInput, 10);
-    const bitrate = parseInt(bitrateInput, 10);
-    const pathPriority = parseInt(pathPriorityInput, 10);
-    const metadataQuality = parseInt(metadataQualityInput, 10);
-
-    const total = lossless + bitrate + pathPriority + metadataQuality;
-
-    if (total !== 100) {
-      console.log(chalk.red(`\n⚠️  Weights add up to ${total}%, must equal 100%. Please try again.\n`));
-      continue;
-    }
-
-    return { lossless, bitrate, pathPriority, metadataQuality };
-  }
-}
-
-export async function promptForRules(
-  directories: string[]
-): Promise<DuplicateRules> {
+export async function promptForRules(): Promise<DuplicateRules> {
   console.log(chalk.cyan('\n📋 Configure Duplicate Resolution Rules\n'));
-  console.log(
-    chalk.gray('These rules will automatically decide which file to keep for clear-cut cases.\n')
-  );
+  console.log(chalk.gray('Rules are applied in order. First rule that can pick a winner decides.\n'));
 
   const confidenceInput = await input({
     message: 'Minimum confidence threshold for auto-decisions (0-100):',
@@ -247,42 +114,24 @@ export async function promptForRules(
 
   const confidenceThreshold = parseInt(confidenceInput, 10);
 
-  const scoreDiffInput = await input({
-    message: 'Minimum score difference for auto-decisions (0-100):',
-    default: '10',
+  const destinationDir = await input({
+    message: 'Destination directory for consolidation:',
+    default: '/Users/aedison/Music',
     validate: (value) => {
-      const num = parseInt(value, 10);
-
-      if (isNaN(num) || num < 0 || num > 100) {
-        return 'Please enter a number between 0 and 100';
+      if (!value.startsWith('/')) {
+        return 'Please enter an absolute path';
       }
 
       return true;
     },
   });
 
-  const scoreDifferenceThreshold = parseInt(scoreDiffInput, 10);
-
-  const weights = await promptForWeights();
-
-  let pathPriority: string[] = [];
-
-  if (directories.length > 0) {
-    const configurePathPriority = await confirm({
-      message: 'Configure directory priority for file selection?',
-      default: false,
-    });
-
-    if (configurePathPriority) {
-      pathPriority = await promptPathPriority(directories);
-    }
-  }
+  const ruleOrder = await promptRuleOrder();
 
   const rules: DuplicateRules = {
     confidenceThreshold,
-    scoreDifferenceThreshold,
-    weights,
-    pathPriority,
+    ruleOrder,
+    destinationDir,
   };
 
   displayRulesSummary(rules);
@@ -294,13 +143,13 @@ function displayRulesSummary(rules: DuplicateRules): void {
   console.log(chalk.cyan('\n📋 Rules Summary:'));
   console.log(chalk.gray('─'.repeat(40)));
   console.log(`  Confidence threshold: ${rules.confidenceThreshold}%`);
-  console.log(`  Score difference threshold: ${rules.scoreDifferenceThreshold}%`);
-  console.log(chalk.gray('  Scoring weights:'));
-  console.log(`    Lossless format: ${rules.weights.lossless}%`);
-  console.log(`    Higher bitrate: ${rules.weights.bitrate}%`);
-  console.log(`    Path priority: ${rules.weights.pathPriority}%`);
-  console.log(`    Metadata quality: ${rules.weights.metadataQuality}%`);
-  console.log(`  Path priorities: ${rules.pathPriority.length} directories configured`);
+  console.log(`  Destination: ${rules.destinationDir}`);
+  console.log(chalk.gray('  Rule priority:'));
+
+  for (let i = 0; i < rules.ruleOrder.length; i++) {
+    const rule = ALL_RULES.find((r) => r.name === rules.ruleOrder[i]);
+    console.log(`    ${i + 1}. ${rule?.label ?? rules.ruleOrder[i]}`);
+  }
 }
 
 export async function promptRulesAction(

@@ -3,9 +3,9 @@ import type {
   DuplicateRules,
   AudioFileMetadata,
   ExtendedDecision,
-  ScoringWeights,
+  RuleName,
+  RuleApplied,
 } from './types.js';
-import { dirname } from 'node:path';
 
 export interface AutoDecisionResult {
   autoDecisions: ExtendedDecision[];
@@ -18,17 +18,6 @@ interface EvaluationResult {
   reason: string;
 }
 
-interface FileScore {
-  file: AudioFileMetadata;
-  score: number;
-  breakdown: {
-    lossless: number;
-    bitrate: number;
-    pathPriority: number;
-    metadataQuality: number;
-  };
-}
-
 function getFileMetadata(
   path: string,
   files: Map<string, AudioFileMetadata>
@@ -36,87 +25,105 @@ function getFileMetadata(
   return files.get(path) ?? null;
 }
 
-function calculateLosslessScore(file: AudioFileMetadata, weight: number): number {
-  return file.lossless ? weight : 0;
-}
-
-function calculateBitrateScore(
-  file: AudioFileMetadata,
-  allFiles: AudioFileMetadata[],
-  weight: number
-): number {
-  const bitrates = allFiles
-    .map((f) => f.bitrate ?? 0)
-    .filter((b) => b > 0);
-
-  if (bitrates.length === 0) {
-    return 0;
+function compareLossless(a: AudioFileMetadata, b: AudioFileMetadata): number {
+  if (a.lossless && !b.lossless) {
+    return -1;
   }
 
-  const maxBitrate = Math.max(...bitrates);
-  const minBitrate = Math.min(...bitrates);
-  const fileBitrate = file.bitrate ?? 0;
-
-  if (maxBitrate === minBitrate) {
-    return weight;
-  }
-
-  const normalized = (fileBitrate - minBitrate) / (maxBitrate - minBitrate);
-
-  return normalized * weight;
-}
-
-function calculatePathPriorityScore(
-  file: AudioFileMetadata,
-  pathPriority: string[],
-  weight: number
-): number {
-  if (pathPriority.length === 0) {
-    return 0;
-  }
-
-  const fileDir = dirname(file.path);
-
-  for (let i = 0; i < pathPriority.length; i++) {
-    const priorityPath = pathPriority[i];
-
-    if (fileDir === priorityPath || fileDir.startsWith(priorityPath + '/')) {
-      const position = pathPriority.length - i;
-      return (position / pathPriority.length) * weight;
-    }
+  if (!a.lossless && b.lossless) {
+    return 1;
   }
 
   return 0;
 }
 
-function calculateMetadataQualityScore(file: AudioFileMetadata, weight: number): number {
-  const fields = [file.title, file.artist, file.album, file.genre, file.year];
-  const filledCount = fields.filter((f) => f !== null && f !== '').length;
+function compareBitrate(a: AudioFileMetadata, b: AudioFileMetadata): number {
+  const aBitrate = a.bitrate ?? 0;
+  const bBitrate = b.bitrate ?? 0;
 
-  return (filledCount / fields.length) * weight;
+  if (aBitrate > bBitrate) {
+    return -1;
+  }
+
+  if (aBitrate < bBitrate) {
+    return 1;
+  }
+
+  return 0;
 }
 
-function calculateFileScore(
-  file: AudioFileMetadata,
-  allFiles: AudioFileMetadata[],
-  weights: ScoringWeights,
-  pathPriority: string[]
-): FileScore {
-  const lossless = calculateLosslessScore(file, weights.lossless);
-  const bitrate = calculateBitrateScore(file, allFiles, weights.bitrate);
-  const pathPriorityScore = calculatePathPriorityScore(file, pathPriority, weights.pathPriority);
-  const metadataQuality = calculateMetadataQualityScore(file, weights.metadataQuality);
+function getMetadataCount(file: AudioFileMetadata): number {
+  const fields = [file.title, file.artist, file.album, file.genre, file.year];
+  return fields.filter((f) => f !== null && f !== '').length;
+}
 
-  return {
-    file,
-    score: lossless + bitrate + pathPriorityScore + metadataQuality,
-    breakdown: {
-      lossless,
-      bitrate,
-      pathPriority: pathPriorityScore,
-      metadataQuality,
-    },
-  };
+function compareMetadata(a: AudioFileMetadata, b: AudioFileMetadata): number {
+  const aCount = getMetadataCount(a);
+  const bCount = getMetadataCount(b);
+
+  if (aCount > bCount) {
+    return -1;
+  }
+
+  if (aCount < bCount) {
+    return 1;
+  }
+
+  return 0;
+}
+
+function applyRule(
+  rule: RuleName,
+  files: AudioFileMetadata[]
+): { winner: AudioFileMetadata | null; applied: boolean } {
+  const sorted = [...files];
+
+  let compareFn: (a: AudioFileMetadata, b: AudioFileMetadata) => number;
+
+  if (rule === 'lossless') {
+    compareFn = compareLossless;
+  } else if (rule === 'bitrate') {
+    compareFn = compareBitrate;
+  } else {
+    compareFn = compareMetadata;
+  }
+
+  sorted.sort(compareFn);
+
+  const best = sorted[0];
+  const second = sorted[1];
+
+  if (compareFn(best, second) < 0) {
+    return { winner: best, applied: true };
+  }
+
+  return { winner: null, applied: false };
+}
+
+function isInDestination(path: string, destinationDir: string): boolean {
+  return path.startsWith(destinationDir + '/') || path.startsWith(destinationDir);
+}
+
+function findBestFile(
+  files: AudioFileMetadata[],
+  ruleOrder: RuleName[],
+  destinationDir: string
+): { winner: AudioFileMetadata; ruleApplied: RuleApplied } {
+  for (const rule of ruleOrder) {
+    const result = applyRule(rule, files);
+
+    if (result.applied && result.winner) {
+      return { winner: result.winner, ruleApplied: rule };
+    }
+  }
+
+  const inDest = files.find((f) => isInDestination(f.path, destinationDir));
+
+  if (inDest) {
+    return { winner: inDest, ruleApplied: 'tie' };
+  }
+
+  return { winner: files[0], ruleApplied: 'tie' };
 }
 
 function evaluateGroup(
@@ -144,26 +151,10 @@ function evaluateGroup(
     };
   }
 
-  const scores = files.map((file) =>
-    calculateFileScore(file, files, rules.weights, rules.pathPriority)
-  );
-
-  scores.sort((a, b) => b.score - a.score);
-
-  const bestScore = scores[0];
-  const secondBestScore = scores[1];
-  const scoreDifference = bestScore.score - secondBestScore.score;
-
-  if (scoreDifference < rules.scoreDifferenceThreshold) {
-    return {
-      decision: null,
-      needsManualReview: true,
-      reason: `Score difference ${scoreDifference.toFixed(1)}% below threshold ${rules.scoreDifferenceThreshold}%`,
-    };
-  }
-
-  const keepPath = bestScore.file.path;
+  const { winner, ruleApplied } = findBestFile(files, rules.ruleOrder, rules.destinationDir);
+  const keepPath = winner.path;
   const deletePaths = group.files.filter((p) => p !== keepPath);
+  const needsCopy = !isInDestination(keepPath, rules.destinationDir);
 
   return {
     decision: {
@@ -172,10 +163,11 @@ function evaluateGroup(
       delete: deletePaths,
       notDuplicates: false,
       decisionType: 'auto',
-      ruleApplied: 'weighted-score',
+      ruleApplied,
+      copyToDestination: needsCopy,
     },
     needsManualReview: false,
-    reason: `Keeping file with highest score (${bestScore.score.toFixed(1)}%)`,
+    reason: `Keeping best file (rule: ${ruleApplied})`,
   };
 }
 
@@ -223,6 +215,11 @@ export function applyRulesToGroups(
 }
 
 export function summarizeAutoDecisions(result: AutoDecisionResult): void {
-  console.log(`\nAuto-decided: ${result.autoDecisions.length} pairs (weighted scoring)`);
+  const needsCopy = result.autoDecisions.filter((d) => d.copyToDestination).length;
+  const alreadyInPlace = result.autoDecisions.length - needsCopy;
+
+  console.log(`\nAuto-decided: ${result.autoDecisions.length} pairs`);
+  console.log(`  - ${alreadyInPlace} already in destination`);
+  console.log(`  - ${needsCopy} will be copied to destination`);
   console.log(`Need manual review: ${result.manualGroups.length} pairs`);
 }

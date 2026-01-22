@@ -96,6 +96,14 @@ export interface DecisionsFile {
   decisions: Decision[];
 }
 
+export interface CopyLogEntry {
+  source: string;
+  destination: string;
+  copiedAt: string;
+  success: boolean;
+  error?: string;
+}
+
 export interface DeletionLogEntry {
   path: string;
   deletedAt: string;
@@ -104,9 +112,10 @@ export interface DeletionLogEntry {
   error?: string;
 }
 
-export interface DeletionLog {
+export interface ExecutionLog {
   executedAt: string;
-  entries: DeletionLogEntry[];
+  copies: CopyLogEntry[];
+  deletions: DeletionLogEntry[];
 }
 
 export interface MetadataFixState {
@@ -117,28 +126,20 @@ export interface MetadataFixState {
   resumedAt?: string;
 }
 
-export interface ScoringWeights {
-  lossless: number;
-  bitrate: number;
-  pathPriority: number;
-  metadataQuality: number;
-}
+export type RuleName = 'lossless' | 'bitrate' | 'metadata';
 
 export interface DuplicateRules {
   confidenceThreshold: number;
-  scoreDifferenceThreshold: number;
-  weights: ScoringWeights;
-  pathPriority: string[];
+  ruleOrder: RuleName[];
+  destinationDir: string;
 }
 
 export type DecisionType = 'auto' | 'manual';
 
-export type RuleApplied =
-  | 'weighted-score'
-  | 'manual-review'
-  | null;
+export type RuleApplied = RuleName | 'tie' | 'manual' | null;
 
 export interface ExtendedDecision extends Decision {
   decisionType: DecisionType;
   ruleApplied: RuleApplied;
+  copyToDestination: boolean;
 }

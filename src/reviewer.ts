@@ -200,7 +200,8 @@ async function promptForDecision(
       delete: [],
       notDuplicates: false,
       decisionType: 'manual',
-      ruleApplied: 'manual-review',
+      ruleApplied: 'manual',
+    copyToDestination: false,
     };
   }
 
@@ -211,7 +212,8 @@ async function promptForDecision(
       delete: [],
       notDuplicates: true,
       decisionType: 'manual',
-      ruleApplied: 'manual-review',
+      ruleApplied: 'manual',
+    copyToDestination: false,
     };
   }
 
@@ -231,7 +233,8 @@ async function promptForDecision(
       delete: [],
       notDuplicates: false,
       decisionType: 'manual',
-      ruleApplied: 'manual-review',
+      ruleApplied: 'manual',
+    copyToDestination: false,
     };
   }
 
@@ -241,7 +244,8 @@ async function promptForDecision(
     delete: deletePaths,
     notDuplicates: false,
     decisionType: 'manual',
-    ruleApplied: 'manual-review',
+    ruleApplied: 'manual',
+    copyToDestination: false,
   };
 }
 

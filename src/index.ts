@@ -17,9 +17,10 @@ import type {
   AudioFileMetadata,
   DuplicatesFile,
   DecisionsFile,
-  DeletionLog,
+  ExecutionLog,
   MetadataFixState,
   Decision,
+  ExtendedDecision,
 } from './types.js';
 import {
   findFilesWithMissingMetadata,
@@ -30,7 +31,6 @@ import {
   saveRules,
   promptForRules,
   promptRulesAction,
-  extractUniqueDirectories,
 } from './rules.js';
 import {
   applyRulesToGroups,
@@ -300,15 +300,13 @@ async function runReview(): Promise<void> {
     const action = await promptRulesAction(rules);
 
     if (action === 'reconfigure') {
-      const directories = extractUniqueDirectories(files);
-      rules = await promptForRules(directories);
+      rules = await promptForRules();
       await saveRules(rules);
     }
   } else {
     console.log(chalk.yellow('No duplicate resolution rules configured yet.\n'));
 
-    const directories = extractUniqueDirectories(files);
-    rules = await promptForRules(directories);
+    rules = await promptForRules();
     await saveRules(rules);
   }
 
@@ -367,6 +365,13 @@ async function runExecute(): Promise<void> {
     return;
   }
 
+  const rules = await loadRules();
+
+  if (!rules || !rules.destinationDir) {
+    console.log(chalk.yellow('No destination directory configured. Run review to configure rules.'));
+    return;
+  }
+
   const decisions: DecisionsFile = JSON.parse(decisionsData);
   const files = await loadScannedFiles();
 
@@ -388,12 +393,109 @@ async function runExecute(): Promise<void> {
     return;
   }
 
-  const log = await executeDecisions(decisions.decisions);
+  const log = await executeDecisions(decisions.decisions as ExtendedDecision[], rules.destinationDir);
 
   await mkdir(DATA_DIR, { recursive: true });
   await writeFile(DELETION_LOG_FILE, JSON.stringify(log, null, 2));
 
   console.log(chalk.gray(`\nLog saved to: ${DELETION_LOG_FILE}`));
+}
+
+async function runCopyUnique(): Promise<void> {
+  console.log(chalk.cyan('\n📁 Copy Unique Files\n'));
+
+  const rules = await loadRules();
+
+  if (!rules || !rules.destinationDir) {
+    console.log(chalk.yellow('No destination directory configured. Run review to configure rules.'));
+    return;
+  }
+
+  const files = await loadScannedFiles();
+  const duplicatesData = await readFile(DUPLICATES_FILE, 'utf-8').catch(() => null);
+
+  if (!duplicatesData) {
+    console.log(chalk.yellow('No duplicates data found. Run find-dupes first.'));
+    return;
+  }
+
+  const duplicates: DuplicatesFile = JSON.parse(duplicatesData);
+
+  const filesInDuplicates = new Set<string>();
+
+  for (const group of duplicates.groups) {
+    for (const path of group.files) {
+      filesInDuplicates.add(path);
+    }
+  }
+
+  const uniqueFilesOutsideDest: string[] = [];
+
+  for (const [path] of files) {
+    const inDuplicates = filesInDuplicates.has(path);
+    const inDest = path.startsWith(rules.destinationDir + '/') || path.startsWith(rules.destinationDir);
+
+    if (!inDuplicates && !inDest) {
+      uniqueFilesOutsideDest.push(path);
+    }
+  }
+
+  if (uniqueFilesOutsideDest.length === 0) {
+    console.log(chalk.green('All unique files are already in the destination directory.'));
+    return;
+  }
+
+  console.log(`Found ${uniqueFilesOutsideDest.length} unique files outside destination:\n`);
+
+  for (const path of uniqueFilesOutsideDest.slice(0, 10)) {
+    console.log(chalk.gray(`  ${path}`));
+  }
+
+  if (uniqueFilesOutsideDest.length > 10) {
+    console.log(chalk.gray(`  ... and ${uniqueFilesOutsideDest.length - 10} more`));
+  }
+
+  const proceed = await confirm({
+    message: `\nCopy ${uniqueFilesOutsideDest.length} unique files to ${rules.destinationDir}?`,
+    default: false,
+  });
+
+  if (!proceed) {
+    console.log(chalk.yellow('Copy cancelled.'));
+    return;
+  }
+
+  console.log(chalk.cyan(`\nCopying ${uniqueFilesOutsideDest.length} files...\n`));
+
+  let copied = 0;
+  let failed = 0;
+
+  for (let i = 0; i < uniqueFilesOutsideDest.length; i++) {
+    const sourcePath = uniqueFilesOutsideDest[i];
+    const filename = sourcePath.split('/').pop() ?? '';
+    const destPath = `${rules.destinationDir}/${filename}`;
+    const progress = `[${i + 1}/${uniqueFilesOutsideDest.length}]`;
+
+    try {
+      await mkdir(rules.destinationDir, { recursive: true });
+      const { copyFile } = await import('node:fs/promises');
+      await copyFile(sourcePath, destPath);
+      console.log(chalk.green(`${progress} ✓ ${filename}`));
+      copied++;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.log(chalk.red(`${progress} ✗ ${filename}: ${msg}`));
+      failed++;
+    }
+  }
+
+  console.log(chalk.cyan('\nCopy Summary'));
+  console.log(chalk.gray('─'.repeat(40)));
+  console.log(chalk.green(`Copied: ${copied}`));
+
+  if (failed > 0) {
+    console.log(chalk.red(`Failed: ${failed}`));
+  }
 }
 
 async function loadFixState(): Promise<MetadataFixState | null> {
@@ -540,6 +642,15 @@ async function runAll(): Promise<void> {
     await runExecute();
   }
 
+  const copyUnique = await confirm({
+    message: '\nCopy unique files from other directories to destination?',
+    default: false,
+  });
+
+  if (copyUnique) {
+    await runCopyUnique();
+  }
+
   console.log(chalk.green('\n✓ Done!'));
 }
 
@@ -564,6 +675,10 @@ switch (command) {
 
   case 'fix-metadata':
     runFixMetadata().catch(console.error);
+    break;
+
+  case 'copy-unique':
+    runCopyUnique().catch(console.error);
     break;
 
   default:
