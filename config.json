@@ -108,19 +108,12 @@
     "wv"
   ],
   "duplicateRules": {
-    "confidenceThreshold": 90,
-    "scoreDifferenceThreshold": 10,
-    "weights": {
-      "lossless": 50,
-      "bitrate": 20,
-      "pathPriority": 20,
-      "metadataQuality": 10
-    },
-    "pathPriority": [
-      "/Users/aedison/Music",
-      "/Users/aedison/Downloads",
-      "/Volumes/Blackwing - Macbook Pro Stuff/MainAdamAccount/AlterAccountMirror",
-      "/Volumes/Blackwing - Macbook Pro Stuff/MainAdamAccount/Music"
-    ]
+    "confidenceThreshold": 40,
+    "ruleOrder": [
+      "lossless",
+      "bitrate",
+      "metadata"
+    ],
+    "destinationDir": "/Users/aedison/Music"
   }
 }
