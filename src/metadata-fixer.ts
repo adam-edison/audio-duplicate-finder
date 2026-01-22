@@ -107,24 +107,35 @@ export async function fixMetadataInteractive(
     batches.push(batchFiles.slice(i, i + BATCH_SIZE));
   }
 
-  console.log(chalk.gray(`Split into ${batches.length} batches of up to ${BATCH_SIZE} files each\n`));
+  console.log(chalk.gray(`Split into ${batches.length} batches of up to ${BATCH_SIZE} files each`));
 
   const inferredResults = new Map<number, InferredMetadata>();
+  const batchPromises: Promise<void>[] = [];
+  let completedBatches = 0;
 
-  for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+  const processBatch = async (batchIdx: number): Promise<void> => {
     const batch = batches[batchIdx];
-    const spinner = ora(`Batch ${batchIdx + 1}/${batches.length}: Analyzing ${batch.length} files...`).start();
-
     const batchResults = await inferMetadataBatch(batch);
 
     for (const [idx, result] of batchResults) {
       inferredResults.set(idx, result);
     }
 
-    spinner.succeed(`Batch ${batchIdx + 1}/${batches.length}: Done (${batch.length} files)`);
+    completedBatches++;
+  };
+
+  const firstBatchSpinner = ora(`Batch 1/${batches.length}: Analyzing ${batches[0].length} files...`).start();
+  await processBatch(0);
+  firstBatchSpinner.succeed(`Batch 1/${batches.length}: Done (${batches[0].length} files)`);
+
+  for (let batchIdx = 1; batchIdx < batches.length; batchIdx++) {
+    batchPromises.push(processBatch(batchIdx));
   }
 
-  console.log(chalk.green(`\n✓ AI analysis complete for ${filesToProcess.length} files`));
+  if (batches.length > 1) {
+    console.log(chalk.gray(`Remaining ${batches.length - 1} batches processing in background...`));
+  }
+
   console.log(chalk.gray('Press Ctrl+C to quit and save progress\n'));
 
   for (let i = startIndex; i < filesWithMissing.length; i++) {
@@ -134,9 +145,27 @@ export async function fixMetadataInteractive(
     console.log(
       chalk.yellow(`\nFile ${i + 1} of ${filesWithMissing.length}`)
     );
+
+    if (completedBatches < batches.length) {
+      console.log(chalk.gray(`AI batches: ${completedBatches}/${batches.length} complete`));
+    }
+
     console.log(chalk.gray(`Missing: ${missingFields.join(', ')}`));
 
-    const inferred = inferredResults.get(i) ?? {
+    let inferred = inferredResults.get(i);
+
+    if (!inferred) {
+      const spinner = ora('Waiting for AI batch to complete...').start();
+
+      while (!inferredResults.has(i)) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+
+      spinner.stop();
+      inferred = inferredResults.get(i);
+    }
+
+    inferred = inferred ?? {
       artist: null,
       title: null,
       genre: null,
@@ -208,6 +237,7 @@ export async function fixMetadataInteractive(
     }
   }
 
+  await Promise.all(batchPromises);
   await saveCache(cache);
 
   console.log(chalk.cyan('\n' + '─'.repeat(60)));
