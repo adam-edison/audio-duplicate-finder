@@ -18,7 +18,7 @@ export interface FixResult {
   updatedFiles: Map<string, AudioFileMetadata>;
 }
 
-const BATCH_SIZE = 50;
+const BATCH_SIZE = 20;
 
 export function findFilesWithMissingMetadata(
   files: Map<string, AudioFileMetadata>
@@ -89,8 +89,7 @@ export async function fixMetadataInteractive(
 
   const filesToProcess = filesWithMissing.slice(startIndex);
 
-  const spinner = ora('Analyzing all files with AI (batch processing)...').start();
-  spinner.text = `Analyzing ${filesToProcess.length} files with AI...`;
+  console.log(chalk.cyan(`\nBatch analyzing ${filesToProcess.length} files with AI...`));
 
   const batchFiles: BatchFileInfo[] = filesToProcess.map((file, idx) => ({
     index: startIndex + idx,
@@ -108,18 +107,24 @@ export async function fixMetadataInteractive(
     batches.push(batchFiles.slice(i, i + BATCH_SIZE));
   }
 
+  console.log(chalk.gray(`Split into ${batches.length} batches of up to ${BATCH_SIZE} files each\n`));
+
   const inferredResults = new Map<number, InferredMetadata>();
 
   for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
-    spinner.text = `Analyzing batch ${batchIdx + 1}/${batches.length} (${batches[batchIdx].length} files)...`;
-    const batchResults = await inferMetadataBatch(batches[batchIdx]);
+    const batch = batches[batchIdx];
+    const spinner = ora(`Batch ${batchIdx + 1}/${batches.length}: Analyzing ${batch.length} files...`).start();
+
+    const batchResults = await inferMetadataBatch(batch);
 
     for (const [idx, result] of batchResults) {
       inferredResults.set(idx, result);
     }
+
+    spinner.succeed(`Batch ${batchIdx + 1}/${batches.length}: Done (${batch.length} files)`);
   }
 
-  spinner.succeed(`AI analysis complete for ${filesToProcess.length} files`);
+  console.log(chalk.green(`\n✓ AI analysis complete for ${filesToProcess.length} files`));
   console.log(chalk.gray('Press Ctrl+C to quit and save progress\n'));
 
   for (let i = startIndex; i < filesWithMissing.length; i++) {
