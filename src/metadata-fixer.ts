@@ -64,12 +64,10 @@ function getMissingFields(
   return missing;
 }
 
-async function fetchFile(
-  file: AudioFileMetadata
-): Promise<FetchedResult> {
+function fetchFile(file: AudioFileMetadata): FetchedResult {
   const missingFields = getMissingFields(file);
   const parsed = parseFilename(file.path);
-  const inferred = await inferMetadata(parsed, [], missingFields);
+  const inferred = inferMetadata(parsed, [], missingFields);
 
   return { inferred, missingFields };
 }
@@ -102,52 +100,13 @@ export async function fixMetadataInteractive(
 
   console.log(chalk.gray('Press Ctrl+C to quit and save progress\n'));
 
-  const fetchedResults: Map<number, FetchedResult> = new Map();
-  const inFlight: Map<number, Promise<FetchedResult>> = new Map();
-  let fetcherIndex = startIndex;
-  const PARALLEL_FETCHES = 5;
-
-  const prefetchNext = (): void => {
-    while (inFlight.size < PARALLEL_FETCHES && fetcherIndex < filesWithMissing.length) {
-      const idx = fetcherIndex;
-      fetcherIndex++;
-
-      const promise = fetchFile(filesWithMissing[idx]);
-      inFlight.set(idx, promise);
-
-      promise
-        .then((result) => {
-          fetchedResults.set(idx, result);
-          inFlight.delete(idx);
-          prefetchNext();
-        })
-        .catch(() => {
-          inFlight.delete(idx);
-          prefetchNext();
-        });
-    }
-  };
-
-  prefetchNext();
-
   for (let i = startIndex; i < filesWithMissing.length; i++) {
     const file = filesWithMissing[i];
     const remaining = filesWithMissing.length - i;
-    const prefetched = fetchedResults.size;
 
-    console.log(chalk.yellow(`\nFile ${i + 1} of ${filesWithMissing.length} (${remaining} left, ${prefetched} prefetched)`));
+    console.log(chalk.yellow(`\nFile ${i + 1} of ${filesWithMissing.length} (${remaining} left)`));
 
-    let fetched = fetchedResults.get(i);
-
-    if (!fetched && inFlight.has(i)) {
-      console.log(chalk.gray('Waiting for AI...'));
-      fetched = await inFlight.get(i);
-    }
-
-    if (!fetched) {
-      console.log(chalk.gray('Analyzing...'));
-      fetched = await fetchFile(file);
-    }
+    const fetched = fetchFile(file);
 
     console.log(chalk.gray(`Missing: ${fetched.missingFields.join(', ')}`));
 
@@ -165,8 +124,6 @@ export async function fixMetadataInteractive(
       existingMetadata,
       cache
     );
-
-    fetchedResults.delete(i);
 
     if (result.action === 'quit') {
       state.lastProcessedIndex = i;
