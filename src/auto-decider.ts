@@ -3,7 +3,7 @@ import type {
   DuplicateRules,
   AudioFileMetadata,
   ExtendedDecision,
-  RuleApplied,
+  ScoringWeights,
 } from './types.js';
 import { dirname } from 'node:path';
 
@@ -18,6 +18,17 @@ interface EvaluationResult {
   reason: string;
 }
 
+interface FileScore {
+  file: AudioFileMetadata;
+  score: number;
+  breakdown: {
+    lossless: number;
+    bitrate: number;
+    pathPriority: number;
+    metadataQuality: number;
+  };
+}
+
 function getFileMetadata(
   path: string,
   files: Map<string, AudioFileMetadata>
@@ -25,77 +36,87 @@ function getFileMetadata(
   return files.get(path) ?? null;
 }
 
-function getDurationDiff(
-  files: AudioFileMetadata[]
-): number {
-  const durations = files
-    .map((f) => f.duration)
-    .filter((d): d is number => d !== null);
+function calculateLosslessScore(file: AudioFileMetadata, weight: number): number {
+  return file.lossless ? weight : 0;
+}
 
-  if (durations.length < 2) {
+function calculateBitrateScore(
+  file: AudioFileMetadata,
+  allFiles: AudioFileMetadata[],
+  weight: number
+): number {
+  const bitrates = allFiles
+    .map((f) => f.bitrate ?? 0)
+    .filter((b) => b > 0);
+
+  if (bitrates.length === 0) {
     return 0;
   }
 
-  const min = Math.min(...durations);
-  const max = Math.max(...durations);
+  const maxBitrate = Math.max(...bitrates);
+  const minBitrate = Math.min(...bitrates);
+  const fileBitrate = file.bitrate ?? 0;
 
-  return max - min;
+  if (maxBitrate === minBitrate) {
+    return weight;
+  }
+
+  const normalized = (fileBitrate - minBitrate) / (maxBitrate - minBitrate);
+
+  return normalized * weight;
 }
 
-function bothAreLossless(files: AudioFileMetadata[]): boolean {
-  return files.every((f) => f.lossless);
-}
+function calculatePathPriorityScore(
+  file: AudioFileMetadata,
+  pathPriority: string[],
+  weight: number
+): number {
+  if (pathPriority.length === 0) {
+    return 0;
+  }
 
-function bothAreLossy(files: AudioFileMetadata[]): boolean {
-  return files.every((f) => !f.lossless);
-}
+  const fileDir = dirname(file.path);
 
-function hasLosslessAndLossy(files: AudioFileMetadata[]): boolean {
-  const hasLossless = files.some((f) => f.lossless);
-  const hasLossy = files.some((f) => !f.lossless);
+  for (let i = 0; i < pathPriority.length; i++) {
+    const priorityPath = pathPriority[i];
 
-  return hasLossless && hasLossy;
-}
-
-function findLosslessFile(files: AudioFileMetadata[]): AudioFileMetadata | null {
-  return files.find((f) => f.lossless) ?? null;
-}
-
-function findHigherBitrateFile(files: AudioFileMetadata[]): AudioFileMetadata | null {
-  let best: AudioFileMetadata | null = null;
-  let maxBitrate = 0;
-
-  for (const file of files) {
-    const bitrate = file.bitrate ?? 0;
-
-    if (bitrate > maxBitrate) {
-      maxBitrate = bitrate;
-      best = file;
+    if (fileDir === priorityPath || fileDir.startsWith(priorityPath + '/')) {
+      const position = pathPriority.length - i;
+      return (position / pathPriority.length) * weight;
     }
   }
 
-  if (best && files.filter((f) => (f.bitrate ?? 0) === maxBitrate).length > 1) {
-    return null;
-  }
-
-  return best;
+  return 0;
 }
 
-function findFileByPathPriority(
-  files: AudioFileMetadata[],
+function calculateMetadataQualityScore(file: AudioFileMetadata, weight: number): number {
+  const fields = [file.title, file.artist, file.album, file.genre, file.year];
+  const filledCount = fields.filter((f) => f !== null && f !== '').length;
+
+  return (filledCount / fields.length) * weight;
+}
+
+function calculateFileScore(
+  file: AudioFileMetadata,
+  allFiles: AudioFileMetadata[],
+  weights: ScoringWeights,
   pathPriority: string[]
-): AudioFileMetadata | null {
-  for (const priorityPath of pathPriority) {
-    for (const file of files) {
-      const dir = dirname(file.path);
+): FileScore {
+  const lossless = calculateLosslessScore(file, weights.lossless);
+  const bitrate = calculateBitrateScore(file, allFiles, weights.bitrate);
+  const pathPriorityScore = calculatePathPriorityScore(file, pathPriority, weights.pathPriority);
+  const metadataQuality = calculateMetadataQualityScore(file, weights.metadataQuality);
 
-      if (dir === priorityPath || dir.startsWith(priorityPath + '/')) {
-        return file;
-      }
-    }
-  }
-
-  return null;
+  return {
+    file,
+    score: lossless + bitrate + pathPriorityScore + metadataQuality,
+    breakdown: {
+      lossless,
+      bitrate,
+      pathPriority: pathPriorityScore,
+      metadataQuality,
+    },
+  };
 }
 
 function evaluateGroup(
@@ -123,91 +144,38 @@ function evaluateGroup(
     };
   }
 
-  const durationDiff = getDurationDiff(files);
+  const scores = files.map((file) =>
+    calculateFileScore(file, files, rules.weights, rules.pathPriority)
+  );
 
-  if (durationDiff > rules.maxDurationDiffSeconds) {
+  scores.sort((a, b) => b.score - a.score);
+
+  const bestScore = scores[0];
+  const secondBestScore = scores[1];
+  const scoreDifference = bestScore.score - secondBestScore.score;
+
+  if (scoreDifference < rules.scoreDifferenceThreshold) {
     return {
       decision: null,
       needsManualReview: true,
-      reason: `Duration difference ${durationDiff.toFixed(1)}s exceeds ${rules.maxDurationDiffSeconds}s`,
+      reason: `Score difference ${scoreDifference.toFixed(1)}% below threshold ${rules.scoreDifferenceThreshold}%`,
     };
   }
 
-  if (bothAreLossless(files)) {
-    return {
-      decision: null,
-      needsManualReview: true,
-      reason: 'Both files are lossless - manual selection needed',
-    };
-  }
-
-  if (rules.preferLossless && hasLosslessAndLossy(files)) {
-    const losslessFile = findLosslessFile(files);
-
-    if (losslessFile) {
-      const deletePaths = group.files.filter((p) => p !== losslessFile.path);
-
-      return {
-        decision: {
-          groupId: group.id,
-          keep: [losslessFile.path],
-          delete: deletePaths,
-          notDuplicates: false,
-          decisionType: 'auto',
-          ruleApplied: 'lossless-over-lossy',
-        },
-        needsManualReview: false,
-        reason: 'Keeping lossless file over lossy',
-      };
-    }
-  }
-
-  if (rules.preferHigherBitrate && bothAreLossy(files)) {
-    const higherBitrateFile = findHigherBitrateFile(files);
-
-    if (higherBitrateFile) {
-      const deletePaths = group.files.filter((p) => p !== higherBitrateFile.path);
-
-      return {
-        decision: {
-          groupId: group.id,
-          keep: [higherBitrateFile.path],
-          delete: deletePaths,
-          notDuplicates: false,
-          decisionType: 'auto',
-          ruleApplied: 'higher-bitrate',
-        },
-        needsManualReview: false,
-        reason: `Keeping higher bitrate file (${higherBitrateFile.bitrate}kbps)`,
-      };
-    }
-  }
-
-  if (rules.pathPriority.length > 0) {
-    const priorityFile = findFileByPathPriority(files, rules.pathPriority);
-
-    if (priorityFile) {
-      const deletePaths = group.files.filter((p) => p !== priorityFile.path);
-
-      return {
-        decision: {
-          groupId: group.id,
-          keep: [priorityFile.path],
-          delete: deletePaths,
-          notDuplicates: false,
-          decisionType: 'auto',
-          ruleApplied: 'path-priority',
-        },
-        needsManualReview: false,
-        reason: 'Keeping file in higher-priority directory',
-      };
-    }
-  }
+  const keepPath = bestScore.file.path;
+  const deletePaths = group.files.filter((p) => p !== keepPath);
 
   return {
-    decision: null,
-    needsManualReview: true,
-    reason: 'No rule matched - manual review needed',
+    decision: {
+      groupId: group.id,
+      keep: [keepPath],
+      delete: deletePaths,
+      notDuplicates: false,
+      decisionType: 'auto',
+      ruleApplied: 'weighted-score',
+    },
+    needsManualReview: false,
+    reason: `Keeping file with highest score (${bestScore.score.toFixed(1)}%)`,
   };
 }
 
@@ -255,19 +223,6 @@ export function applyRulesToGroups(
 }
 
 export function summarizeAutoDecisions(result: AutoDecisionResult): void {
-  const byRule = new Map<RuleApplied, number>();
-
-  for (const decision of result.autoDecisions) {
-    const count = byRule.get(decision.ruleApplied) ?? 0;
-    byRule.set(decision.ruleApplied, count + 1);
-  }
-
-  console.log(`\nAuto-decided: ${result.autoDecisions.length} pairs`);
-
-  for (const [rule, count] of byRule) {
-    const ruleLabel = rule ?? 'unknown';
-    console.log(`  - ${ruleLabel}: ${count}`);
-  }
-
+  console.log(`\nAuto-decided: ${result.autoDecisions.length} pairs (weighted scoring)`);
   console.log(`Need manual review: ${result.manualGroups.length} pairs`);
 }

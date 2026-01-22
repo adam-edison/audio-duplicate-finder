@@ -2,15 +2,19 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { select, checkbox, confirm, input } from '@inquirer/prompts';
 import chalk from 'chalk';
-import type { DuplicateRules, AudioFileMetadata } from './types.js';
+import type { DuplicateRules, AudioFileMetadata, ScoringWeights } from './types.js';
 
 const CONFIG_FILE = join(process.cwd(), 'config.json');
 
 const DEFAULT_RULES: DuplicateRules = {
   confidenceThreshold: 70,
-  maxDurationDiffSeconds: 5,
-  preferLossless: true,
-  preferHigherBitrate: true,
+  scoreDifferenceThreshold: 10,
+  weights: {
+    lossless: 40,
+    bitrate: 25,
+    pathPriority: 20,
+    metadataQuality: 15,
+  },
   pathPriority: [],
 };
 
@@ -114,6 +118,83 @@ export async function promptPathPriority(
   return selected;
 }
 
+async function promptForWeights(): Promise<ScoringWeights> {
+  console.log(chalk.cyan('\n📊 Configure Scoring Weights'));
+  console.log(chalk.gray('Weights must add up to 100%. Higher weight = more important factor.\n'));
+
+  while (true) {
+    const losslessInput = await input({
+      message: 'Lossless format weight (FLAC/WAV over MP3):',
+      default: '40',
+      validate: (value) => {
+        const num = parseInt(value, 10);
+
+        if (isNaN(num) || num < 0 || num > 100) {
+          return 'Please enter a number between 0 and 100';
+        }
+
+        return true;
+      },
+    });
+
+    const bitrateInput = await input({
+      message: 'Higher bitrate weight:',
+      default: '25',
+      validate: (value) => {
+        const num = parseInt(value, 10);
+
+        if (isNaN(num) || num < 0 || num > 100) {
+          return 'Please enter a number between 0 and 100';
+        }
+
+        return true;
+      },
+    });
+
+    const pathPriorityInput = await input({
+      message: 'Path priority weight (preferred directories):',
+      default: '20',
+      validate: (value) => {
+        const num = parseInt(value, 10);
+
+        if (isNaN(num) || num < 0 || num > 100) {
+          return 'Please enter a number between 0 and 100';
+        }
+
+        return true;
+      },
+    });
+
+    const metadataQualityInput = await input({
+      message: 'Metadata quality weight (complete tags):',
+      default: '15',
+      validate: (value) => {
+        const num = parseInt(value, 10);
+
+        if (isNaN(num) || num < 0 || num > 100) {
+          return 'Please enter a number between 0 and 100';
+        }
+
+        return true;
+      },
+    });
+
+    const lossless = parseInt(losslessInput, 10);
+    const bitrate = parseInt(bitrateInput, 10);
+    const pathPriority = parseInt(pathPriorityInput, 10);
+    const metadataQuality = parseInt(metadataQualityInput, 10);
+
+    const total = lossless + bitrate + pathPriority + metadataQuality;
+
+    if (total !== 100) {
+      console.log(chalk.red(`\n⚠️  Weights add up to ${total}%, must equal 100%. Please try again.\n`));
+      continue;
+    }
+
+    return { lossless, bitrate, pathPriority, metadataQuality };
+  }
+}
+
 export async function promptForRules(
   directories: string[]
 ): Promise<DuplicateRules> {
@@ -138,31 +219,23 @@ export async function promptForRules(
 
   const confidenceThreshold = parseInt(confidenceInput, 10);
 
-  const durationInput = await input({
-    message: 'Maximum duration difference (seconds) for auto-decisions:',
-    default: '5',
+  const scoreDiffInput = await input({
+    message: 'Minimum score difference for auto-decisions (0-100):',
+    default: '10',
     validate: (value) => {
       const num = parseInt(value, 10);
 
-      if (isNaN(num) || num < 0) {
-        return 'Please enter a positive number';
+      if (isNaN(num) || num < 0 || num > 100) {
+        return 'Please enter a number between 0 and 100';
       }
 
       return true;
     },
   });
 
-  const maxDurationDiffSeconds = parseInt(durationInput, 10);
+  const scoreDifferenceThreshold = parseInt(scoreDiffInput, 10);
 
-  const preferLossless = await confirm({
-    message: 'Prefer lossless formats (FLAC, WAV, etc.) over lossy (MP3, AAC)?',
-    default: true,
-  });
-
-  const preferHigherBitrate = await confirm({
-    message: 'Prefer higher bitrate when both files are lossy?',
-    default: true,
-  });
+  const weights = await promptForWeights();
 
   let pathPriority: string[] = [];
 
@@ -179,35 +252,34 @@ export async function promptForRules(
 
   const rules: DuplicateRules = {
     confidenceThreshold,
-    maxDurationDiffSeconds,
-    preferLossless,
-    preferHigherBitrate,
+    scoreDifferenceThreshold,
+    weights,
     pathPriority,
   };
 
+  displayRulesSummary(rules);
+
+  return rules;
+}
+
+function displayRulesSummary(rules: DuplicateRules): void {
   console.log(chalk.cyan('\n📋 Rules Summary:'));
   console.log(chalk.gray('─'.repeat(40)));
   console.log(`  Confidence threshold: ${rules.confidenceThreshold}%`);
-  console.log(`  Max duration difference: ${rules.maxDurationDiffSeconds}s`);
-  console.log(`  Prefer lossless: ${rules.preferLossless ? 'Yes' : 'No'}`);
-  console.log(`  Prefer higher bitrate: ${rules.preferHigherBitrate ? 'Yes' : 'No'}`);
+  console.log(`  Score difference threshold: ${rules.scoreDifferenceThreshold}%`);
+  console.log(chalk.gray('  Scoring weights:'));
+  console.log(`    Lossless format: ${rules.weights.lossless}%`);
+  console.log(`    Higher bitrate: ${rules.weights.bitrate}%`);
+  console.log(`    Path priority: ${rules.weights.pathPriority}%`);
+  console.log(`    Metadata quality: ${rules.weights.metadataQuality}%`);
   console.log(`  Path priorities: ${rules.pathPriority.length} directories configured`);
-
-  return rules;
 }
 
 export async function promptRulesAction(
   existingRules: DuplicateRules
 ): Promise<'use' | 'reconfigure'> {
   console.log(chalk.cyan('\n📋 Existing Rules Found:'));
-  console.log(chalk.gray('─'.repeat(40)));
-  console.log(`  Confidence threshold: ${existingRules.confidenceThreshold}%`);
-  console.log(`  Max duration difference: ${existingRules.maxDurationDiffSeconds}s`);
-  console.log(`  Prefer lossless: ${existingRules.preferLossless ? 'Yes' : 'No'}`);
-  console.log(`  Prefer higher bitrate: ${existingRules.preferHigherBitrate ? 'Yes' : 'No'}`);
-  console.log(
-    `  Path priorities: ${existingRules.pathPriority.length} directories configured`
-  );
+  displayRulesSummary(existingRules);
 
   const answer = await select({
     message: 'What would you like to do?',

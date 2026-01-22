@@ -117,20 +117,24 @@ export interface MetadataFixState {
   resumedAt?: string;
 }
 
+export interface ScoringWeights {
+  lossless: number;
+  bitrate: number;
+  pathPriority: number;
+  metadataQuality: number;
+}
+
 export interface DuplicateRules {
   confidenceThreshold: number;
-  maxDurationDiffSeconds: number;
-  preferLossless: boolean;
-  preferHigherBitrate: boolean;
+  scoreDifferenceThreshold: number;
+  weights: ScoringWeights;
   pathPriority: string[];
 }
 
 export type DecisionType = 'auto' | 'manual';
 
 export type RuleApplied =
-  | 'lossless-over-lossy'
-  | 'higher-bitrate'
-  | 'path-priority'
+  | 'weighted-score'
   | 'manual-review'
   | null;
 
