@@ -103,31 +103,15 @@ export async function fixMetadataInteractive(
   console.log(chalk.gray('Press Ctrl+C to quit and save progress\n'));
 
   const fetchedResults: Map<number, FetchedResult> = new Map();
-  let nextFetchPromise: Promise<void> | null = null;
-  let nextFetchIndex = startIndex;
 
-  const startNextFetch = (): void => {
-    if (nextFetchIndex >= filesWithMissing.length) {
-      return;
-    }
-
-    if (fetchedResults.has(nextFetchIndex)) {
-      nextFetchIndex++;
-      startNextFetch();
-      return;
-    }
-
-    const idx = nextFetchIndex;
-    nextFetchIndex++;
-
-    nextFetchPromise = fetchFile(filesWithMissing[idx]).then((result) => {
+  const runFetcher = async (): Promise<void> => {
+    for (let idx = startIndex; idx < filesWithMissing.length; idx++) {
+      const result = await fetchFile(filesWithMissing[idx]);
       fetchedResults.set(idx, result);
-      nextFetchPromise = null;
-      startNextFetch();
-    });
+    }
   };
 
-  startNextFetch();
+  runFetcher();
 
   for (let i = startIndex; i < filesWithMissing.length; i++) {
     const file = filesWithMissing[i];
