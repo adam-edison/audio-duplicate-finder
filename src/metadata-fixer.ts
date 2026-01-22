@@ -1,5 +1,8 @@
+import { appendFile } from 'node:fs/promises';
+
 import chalk from 'chalk';
 import ora from 'ora';
+
 import type {
   AudioFileMetadata,
   MetadataFixState,
@@ -75,7 +78,8 @@ function fetchFile(file: AudioFileMetadata): FetchedResult {
 export async function fixMetadataInteractive(
   filesWithMissing: AudioFileMetadata[],
   allFiles: Map<string, AudioFileMetadata>,
-  existingState: MetadataFixState | null
+  existingState: MetadataFixState | null,
+  skippedFilesPath: string
 ): Promise<FixResult> {
   const cache = await loadCache();
 
@@ -134,6 +138,7 @@ export async function fixMetadataInteractive(
 
     if (result.action === 'skip') {
       state.skippedCount++;
+      await appendFile(skippedFilesPath, JSON.stringify({ path: file.path, skippedAt: new Date().toISOString() }) + '\n');
       state.lastProcessedIndex = i + 1;
       continue;
     }

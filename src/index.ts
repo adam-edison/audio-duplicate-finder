@@ -51,6 +51,7 @@ const DUPLICATES_FILE = join(DATA_DIR, 'duplicates.json');
 const DECISIONS_FILE = join(DATA_DIR, 'decisions.json');
 const DELETION_LOG_FILE = join(DATA_DIR, 'deletion-log.json');
 const FIX_STATE_FILE = join(DATA_DIR, '.fix-state.json');
+const SKIPPED_FILES_FILE = join(DATA_DIR, 'skipped-files.ndjson');
 
 const DEFAULT_CONFIG: Config = {
   scanPaths: [homedir(), '/Volumes'],
@@ -450,7 +451,8 @@ async function runFixMetadata(): Promise<void> {
   const result = await fixMetadataInteractive(
     filesWithMissing,
     files,
-    shouldResume ? existingState : null
+    shouldResume ? existingState : null,
+    SKIPPED_FILES_FILE
   );
 
   await saveFixState(result.state);
