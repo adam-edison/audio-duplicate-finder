@@ -5,6 +5,7 @@ import type {
   MetadataFixState,
   MusicMetadata,
   Cache,
+  InferredMetadata,
 } from './types.js';
 import { parseFilename } from './parser.js';
 import { inferMetadata } from './inference.js';
@@ -15,6 +16,11 @@ import { loadCache, saveCache, setCacheEntry } from './cache.js';
 export interface FixResult {
   state: MetadataFixState;
   updatedFiles: Map<string, AudioFileMetadata>;
+}
+
+interface FetchedResult {
+  inferred: InferredMetadata;
+  missingFields: Array<'artist' | 'genre' | 'title' | 'album'>;
 }
 
 export function findFilesWithMissingMetadata(
@@ -58,6 +64,16 @@ function getMissingFields(
   return missing;
 }
 
+async function fetchFile(
+  file: AudioFileMetadata
+): Promise<FetchedResult> {
+  const missingFields = getMissingFields(file);
+  const parsed = parseFilename(file.path);
+  const inferred = await inferMetadata(parsed, [], missingFields);
+
+  return { inferred, missingFields };
+}
+
 export async function fixMetadataInteractive(
   filesWithMissing: AudioFileMetadata[],
   allFiles: Map<string, AudioFileMetadata>,
@@ -86,17 +102,52 @@ export async function fixMetadataInteractive(
 
   console.log(chalk.gray('Press Ctrl+C to quit and save progress\n'));
 
+  const fetchedResults: Map<number, FetchedResult> = new Map();
+  let nextFetchPromise: Promise<void> | null = null;
+  let nextFetchIndex = startIndex;
+
+  const startNextFetch = (): void => {
+    if (nextFetchIndex >= filesWithMissing.length) {
+      return;
+    }
+
+    if (fetchedResults.has(nextFetchIndex)) {
+      nextFetchIndex++;
+      startNextFetch();
+      return;
+    }
+
+    const idx = nextFetchIndex;
+    nextFetchIndex++;
+
+    nextFetchPromise = fetchFile(filesWithMissing[idx]).then((result) => {
+      fetchedResults.set(idx, result);
+      nextFetchPromise = null;
+      startNextFetch();
+    });
+  };
+
+  startNextFetch();
+
   for (let i = startIndex; i < filesWithMissing.length; i++) {
     const file = filesWithMissing[i];
-    const missingFields = getMissingFields(file);
 
     console.log(chalk.yellow(`\nFile ${i + 1} of ${filesWithMissing.length}`));
-    console.log(chalk.gray(`Missing: ${missingFields.join(', ')}`));
 
-    const spinner = ora('Analyzing with AI...').start();
-    const parsed = parseFilename(file.path);
-    const inferred = await inferMetadata(parsed, [], missingFields);
-    spinner.stop();
+    let fetched = fetchedResults.get(i);
+
+    if (!fetched) {
+      const spinner = ora('Analyzing with AI...').start();
+
+      while (!fetchedResults.has(i)) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      spinner.stop();
+      fetched = fetchedResults.get(i)!;
+    }
+
+    console.log(chalk.gray(`Missing: ${fetched.missingFields.join(', ')}`));
 
     const existingMetadata: Partial<MusicMetadata> = {
       artist: file.artist ?? undefined,
@@ -107,11 +158,13 @@ export async function fixMetadataInteractive(
 
     const result = await promptForMetadata(
       file.filename,
-      inferred,
-      missingFields,
+      fetched.inferred,
+      fetched.missingFields,
       existingMetadata,
       cache
     );
+
+    fetchedResults.delete(i);
 
     if (result.action === 'quit') {
       state.lastProcessedIndex = i;
