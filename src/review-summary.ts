@@ -3,12 +3,19 @@ import chalk from 'chalk';
 import type { Decision, AudioFileMetadata, ExtendedDecision } from './types.js';
 import { formatFileSize } from './metadata.js';
 
+export interface DeletionEntry {
+  deletePath: string;
+  keepPath: string | null;
+  ruleApplied: string | null;
+}
+
 export interface DeletionSummary {
   totalFiles: number;
   totalSize: number;
   autoDecidedCount: number;
   manualDecidedCount: number;
   filesToDelete: string[];
+  deletionEntries: DeletionEntry[];
 }
 
 export function calculateDeletionSummary(
@@ -16,21 +23,29 @@ export function calculateDeletionSummary(
   files: Map<string, AudioFileMetadata>
 ): DeletionSummary {
   const filesToDelete: string[] = [];
+  const deletionEntries: DeletionEntry[] = [];
   let totalSize = 0;
   let autoDecidedCount = 0;
   let manualDecidedCount = 0;
 
   for (const decision of decisions) {
+    const extDecision = decision as ExtendedDecision;
+    const keepPath = decision.keep.length > 0 ? decision.keep[0] : null;
+
     for (const path of decision.delete) {
       filesToDelete.push(path);
+
+      deletionEntries.push({
+        deletePath: path,
+        keepPath,
+        ruleApplied: extDecision.ruleApplied ?? null,
+      });
 
       const metadata = files.get(path);
 
       if (metadata) {
         totalSize += metadata.size;
       }
-
-      const extDecision = decision as ExtendedDecision;
 
       if (extDecision.decisionType === 'auto') {
         autoDecidedCount++;
@@ -46,6 +61,7 @@ export function calculateDeletionSummary(
     autoDecidedCount,
     manualDecidedCount,
     filesToDelete,
+    deletionEntries,
   };
 }
 
@@ -76,10 +92,10 @@ export function displayPreDeletionSummary(
 }
 
 export async function promptViewFullList(
-  filesToDelete: string[]
+  deletionEntries: DeletionEntry[]
 ): Promise<void> {
   const view = await confirm({
-    message: `View all ${filesToDelete.length} files marked for deletion?`,
+    message: `View all ${deletionEntries.length} files marked for deletion?`,
     default: false,
   });
 
@@ -87,13 +103,60 @@ export async function promptViewFullList(
     return;
   }
 
-  console.log(chalk.yellow('\nFiles to be deleted:\n'));
+  const byReason = new Map<string, DeletionEntry[]>();
 
-  for (let i = 0; i < filesToDelete.length; i++) {
-    console.log(chalk.gray(`  ${i + 1}. ${filesToDelete[i]}`));
+  for (const entry of deletionEntries) {
+    const reason = entry.ruleApplied ?? 'unknown';
+    const existing = byReason.get(reason) || [];
+    existing.push(entry);
+    byReason.set(reason, existing);
   }
 
-  console.log('');
+  const sortedReasons = Array.from(byReason.keys()).sort();
+
+  for (const reason of sortedReasons) {
+    const entries = byReason.get(reason)!;
+    console.log(chalk.cyan(`\n${'═'.repeat(60)}`));
+    console.log(chalk.cyan(`  ${reason.toUpperCase()} (${entries.length} files)`));
+    console.log(chalk.cyan('═'.repeat(60)));
+
+    await displayEntriesPaged(entries);
+  }
+}
+
+async function displayEntriesPaged(entries: DeletionEntry[]): Promise<void> {
+  const pageSize = 50;
+  let offset = 0;
+
+  while (offset < entries.length) {
+    const page = entries.slice(offset, offset + pageSize);
+
+    console.log('');
+
+    for (let i = 0; i < page.length; i++) {
+      const entry = page[i];
+      const num = offset + i + 1;
+      console.log(chalk.red(`  ${num}. DELETE: ${entry.deletePath}`));
+
+      if (entry.keepPath) {
+        console.log(chalk.green(`     KEEP:   ${entry.keepPath}`));
+      }
+    }
+
+    offset += pageSize;
+
+    if (offset < entries.length) {
+      const remaining = entries.length - offset;
+      const continueViewing = await confirm({
+        message: `Show next ${Math.min(pageSize, remaining)} of ${remaining} remaining?`,
+        default: true,
+      });
+
+      if (!continueViewing) {
+        break;
+      }
+    }
+  }
 }
 
 export async function promptDoubleConfirmation(

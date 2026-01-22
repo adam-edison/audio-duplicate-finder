@@ -9,7 +9,7 @@ import cliProgress from 'cli-progress';
 import { scanWithRipgrep } from './scanner.js';
 import { extractMetadata } from './metadata.js';
 import { findDuplicates } from './duplicates.js';
-import { reviewDuplicates, summarizeDecisions } from './reviewer.js';
+import { reviewDuplicates, summarizeDecisions, reviewMetadataDecisions } from './reviewer.js';
 import { executeDecisions } from './deleter.js';
 import type {
   Config,
@@ -324,6 +324,17 @@ async function runReview(): Promise<void> {
     ...autoResult.autoDecisions,
   ];
 
+  if (autoResult.metadataReviewDecisions.length > 0) {
+    console.log(chalk.yellow(`\n${autoResult.metadataReviewDecisions.length} pairs need metadata review\n`));
+
+    const reviewedMetadata = await reviewMetadataDecisions(
+      autoResult.metadataReviewDecisions,
+      files
+    );
+
+    allDecisions.push(...reviewedMetadata);
+  }
+
   if (autoResult.manualGroups.length > 0) {
     console.log(chalk.yellow(`\n${autoResult.manualGroups.length} pairs need manual review\n`));
 
@@ -339,7 +350,7 @@ async function runReview(): Promise<void> {
         (d) => !allDecisions.some((existing) => existing.groupId === d.groupId)
       )
     );
-  } else {
+  } else if (autoResult.metadataReviewDecisions.length === 0) {
     console.log(chalk.green('\nAll pairs were auto-decided!'));
   }
 
@@ -384,7 +395,7 @@ async function runExecute(): Promise<void> {
 
   displayPreDeletionSummary(summary, files);
 
-  await promptViewFullList(summary.filesToDelete);
+  await promptViewFullList(summary.deletionEntries);
 
   const confirmed = await promptDoubleConfirmation(summary.totalFiles);
 
@@ -393,7 +404,7 @@ async function runExecute(): Promise<void> {
     return;
   }
 
-  const log = await executeDecisions(decisions.decisions as ExtendedDecision[], rules.destinationDir);
+  const log = await executeDecisions(decisions.decisions as ExtendedDecision[], rules.destinationDir, files);
 
   await mkdir(DATA_DIR, { recursive: true });
   await writeFile(DELETION_LOG_FILE, JSON.stringify(log, null, 2));

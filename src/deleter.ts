@@ -2,14 +2,184 @@ import { unlink, copyFile, mkdir } from 'node:fs/promises';
 import { dirname, basename, join } from 'node:path';
 import { default as trash } from 'trash';
 import chalk from 'chalk';
-import type { ExtendedDecision, ExecutionLog, CopyLogEntry, DeletionLogEntry } from './types.js';
+import type {
+  ExtendedDecision,
+  ExecutionLog,
+  CopyLogEntry,
+  DeletionLogEntry,
+  AudioFileMetadata,
+  MetadataSelection,
+  MusicMetadata,
+} from './types.js';
+import { writeMetadata } from './writer.js';
+
+interface MetadataWriteLogEntry {
+  path: string;
+  writtenAt: string;
+  success: boolean;
+  error?: string;
+  source: 'single-file' | 'merged';
+}
+
+function buildMergedMetadata(
+  keepFile: AudioFileMetadata,
+  deleteFile: AudioFileMetadata,
+  selection: MetadataSelection
+): MusicMetadata {
+  const result: MusicMetadata = {
+    artist: keepFile.artist ?? '',
+    title: keepFile.title ?? '',
+    genre: keepFile.genre ?? '',
+    album: keepFile.album ?? '',
+  };
+
+  const deletePath = deleteFile.path;
+
+  if (selection.artist === deletePath) {
+    result.artist = deleteFile.artist ?? '';
+  }
+
+  if (selection.title === deletePath) {
+    result.title = deleteFile.title ?? '';
+  }
+
+  if (selection.genre === deletePath) {
+    result.genre = deleteFile.genre ?? '';
+  }
+
+  if (selection.album === deletePath) {
+    result.album = deleteFile.album ?? '';
+  }
+
+  return result;
+}
+
+async function applyMetadataFromSource(
+  decision: ExtendedDecision,
+  files: Map<string, AudioFileMetadata>
+): Promise<MetadataWriteLogEntry | null> {
+  const keepPath = decision.keep[0];
+  const deletePath = decision.delete[0];
+  const metadataSource = decision.metadataSource;
+
+  if (!metadataSource) {
+    return null;
+  }
+
+  if (!deletePath) {
+    return null;
+  }
+
+  const keepFile = files.get(keepPath);
+  const deleteFile = files.get(deletePath);
+
+  if (!keepFile || !deleteFile) {
+    return null;
+  }
+
+  if (typeof metadataSource === 'string') {
+    if (metadataSource === keepPath) {
+      return null;
+    }
+
+    const metadata: MusicMetadata = {
+      artist: deleteFile.artist ?? '',
+      title: deleteFile.title ?? '',
+      genre: deleteFile.genre ?? '',
+      album: deleteFile.album ?? '',
+    };
+
+    try {
+      await writeMetadata(keepPath, metadata);
+
+      return {
+        path: keepPath,
+        writtenAt: new Date().toISOString(),
+        success: true,
+        source: 'single-file',
+      };
+    } catch (error) {
+      return {
+        path: keepPath,
+        writtenAt: new Date().toISOString(),
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        source: 'single-file',
+      };
+    }
+  }
+
+  const hasSelectionsFromDeleteFile = Object.values(metadataSource).some(
+    (source) => source === deletePath
+  );
+
+  if (!hasSelectionsFromDeleteFile) {
+    return null;
+  }
+
+  const mergedMetadata = buildMergedMetadata(keepFile, deleteFile, metadataSource);
+
+  try {
+    await writeMetadata(keepPath, mergedMetadata);
+
+    return {
+      path: keepPath,
+      writtenAt: new Date().toISOString(),
+      success: true,
+      source: 'merged',
+    };
+  } catch (error) {
+    return {
+      path: keepPath,
+      writtenAt: new Date().toISOString(),
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      source: 'merged',
+    };
+  }
+}
 
 export async function executeDecisions(
   decisions: ExtendedDecision[],
-  destinationDir: string
+  destinationDir: string,
+  files?: Map<string, AudioFileMetadata>
 ): Promise<ExecutionLog> {
   const copies: CopyLogEntry[] = [];
   const deletions: DeletionLogEntry[] = [];
+  const metadataWrites: MetadataWriteLogEntry[] = [];
+
+  if (files) {
+    const decisionsNeedingMetadata = decisions.filter(
+      (d) => d.metadataSource && d.keep.length > 0 && d.delete.length > 0
+    );
+
+    if (decisionsNeedingMetadata.length > 0) {
+      console.log(chalk.cyan(`\nApplying metadata to ${decisionsNeedingMetadata.length} files\n`));
+
+      for (let i = 0; i < decisionsNeedingMetadata.length; i++) {
+        const decision = decisionsNeedingMetadata[i];
+        const keepPath = decision.keep[0];
+        const progress = `[${i + 1}/${decisionsNeedingMetadata.length}]`;
+
+        console.log(chalk.gray(`${progress} ${keepPath.split('/').pop()}`));
+
+        const result = await applyMetadataFromSource(decision, files);
+
+        if (!result) {
+          console.log(chalk.gray(`  ○ No metadata changes needed`));
+          continue;
+        }
+
+        metadataWrites.push(result);
+
+        if (result.success) {
+          console.log(chalk.green(`  ✓ Metadata written (${result.source})`));
+        } else {
+          console.log(chalk.red(`  ✗ ${result.error}`));
+        }
+      }
+    }
+  }
 
   const needsCopy = decisions.filter((d) => d.copyToDestination && d.keep.length > 0);
   const allDeletes = decisions.flatMap((d) => d.delete);

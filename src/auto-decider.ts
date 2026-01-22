@@ -5,11 +5,14 @@ import type {
   ExtendedDecision,
   RuleName,
   RuleApplied,
+  MetadataComparison,
+  MetadataFieldName,
 } from './types.js';
 
 export interface AutoDecisionResult {
   autoDecisions: ExtendedDecision[];
   manualGroups: DuplicateGroup[];
+  metadataReviewDecisions: ExtendedDecision[];
 }
 
 interface EvaluationResult {
@@ -55,6 +58,53 @@ function compareBitrate(a: AudioFileMetadata, b: AudioFileMetadata): number {
 function getMetadataCount(file: AudioFileMetadata): number {
   const fields = [file.title, file.artist, file.album, file.genre, file.year];
   return fields.filter((f) => f !== null && f !== '').length;
+}
+
+function normalizeValue(value: string | number | null): string | number | null {
+  if (value === null || value === '') {
+    return null;
+  }
+
+  if (typeof value === 'string') {
+    return value.trim().toLowerCase();
+  }
+
+  return value;
+}
+
+export function compareMetadataFields(
+  fileA: AudioFileMetadata,
+  fileB: AudioFileMetadata
+): MetadataComparison {
+  const fieldsToCompare: MetadataFieldName[] = ['title', 'artist', 'album', 'genre', 'year'];
+  const differences: MetadataComparison['differences'] = [];
+
+  for (const field of fieldsToCompare) {
+    const valueA = fileA[field];
+    const valueB = fileB[field];
+
+    const normalizedA = normalizeValue(valueA);
+    const normalizedB = normalizeValue(valueB);
+
+    if (normalizedA === normalizedB) {
+      continue;
+    }
+
+    if (normalizedA === null && normalizedB === null) {
+      continue;
+    }
+
+    differences.push({
+      field,
+      fileA: valueA,
+      fileB: valueB,
+    });
+  }
+
+  return {
+    identical: differences.length === 0,
+    differences,
+  };
 }
 
 function compareMetadata(a: AudioFileMetadata, b: AudioFileMetadata): number {
@@ -156,6 +206,13 @@ function evaluateGroup(
   const deletePaths = group.files.filter((p) => p !== keepPath);
   const needsCopy = !isInDestination(keepPath, rules.destinationDir);
 
+  const loser = files.find((f) => f.path !== keepPath);
+  const metadataComparison = loser ? compareMetadataFields(winner, loser) : { identical: true, differences: [] };
+
+  const isTie = ruleApplied === 'tie';
+  const needsMetadataReview = isTie && !metadataComparison.identical;
+  const metadataSource = metadataComparison.identical ? keepPath : undefined;
+
   return {
     decision: {
       groupId: group.id,
@@ -165,6 +222,8 @@ function evaluateGroup(
       decisionType: 'auto',
       ruleApplied,
       copyToDestination: needsCopy,
+      metadataSource,
+      needsMetadataReview,
     },
     needsManualReview: false,
     reason: `Keeping best file (rule: ${ruleApplied})`,
@@ -179,6 +238,7 @@ export function applyRulesToGroups(
 ): AutoDecisionResult {
   const autoDecisions: ExtendedDecision[] = [];
   const manualGroups: DuplicateGroup[] = [];
+  const metadataReviewDecisions: ExtendedDecision[] = [];
 
   for (const group of groups) {
     if (existingDecisions.has(group.id)) {
@@ -187,6 +247,12 @@ export function applyRulesToGroups(
 
     const hasDecidedFile = group.files.some((f) => {
       for (const decision of autoDecisions) {
+        if (decision.keep.includes(f) || decision.delete.includes(f)) {
+          return true;
+        }
+      }
+
+      for (const decision of metadataReviewDecisions) {
         if (decision.keep.includes(f) || decision.delete.includes(f)) {
           return true;
         }
@@ -206,12 +272,19 @@ export function applyRulesToGroups(
       continue;
     }
 
-    if (result.decision) {
-      autoDecisions.push(result.decision);
+    if (!result.decision) {
+      continue;
     }
+
+    if (result.decision.needsMetadataReview) {
+      metadataReviewDecisions.push(result.decision);
+      continue;
+    }
+
+    autoDecisions.push(result.decision);
   }
 
-  return { autoDecisions, manualGroups };
+  return { autoDecisions, manualGroups, metadataReviewDecisions };
 }
 
 export function summarizeAutoDecisions(result: AutoDecisionResult): void {
@@ -221,5 +294,6 @@ export function summarizeAutoDecisions(result: AutoDecisionResult): void {
   console.log(`\nAuto-decided: ${result.autoDecisions.length} pairs`);
   console.log(`  - ${alreadyInPlace} already in destination`);
   console.log(`  - ${needsCopy} will be copied to destination`);
+  console.log(`Need metadata review: ${result.metadataReviewDecisions.length} pairs`);
   console.log(`Need manual review: ${result.manualGroups.length} pairs`);
 }

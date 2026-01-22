@@ -138,8 +138,31 @@ export type DecisionType = 'auto' | 'manual';
 
 export type RuleApplied = RuleName | 'tie' | 'manual' | null;
 
+export type MetadataFieldName = 'title' | 'artist' | 'album' | 'genre' | 'year';
+
+export interface MetadataFieldDifference {
+  field: MetadataFieldName;
+  fileA: string | number | null;
+  fileB: string | number | null;
+}
+
+export interface MetadataComparison {
+  identical: boolean;
+  differences: MetadataFieldDifference[];
+}
+
+export interface MetadataSelection {
+  title?: string;
+  artist?: string;
+  album?: string;
+  genre?: string;
+  year?: string;
+}
+
 export interface ExtendedDecision extends Decision {
   decisionType: DecisionType;
   ruleApplied: RuleApplied;
   copyToDestination: boolean;
+  metadataSource?: string | MetadataSelection;
+  needsMetadataReview?: boolean;
 }

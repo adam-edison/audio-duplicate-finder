@@ -6,8 +6,12 @@ import type {
   Decision,
   DecisionsFile,
   ExtendedDecision,
+  MetadataComparison,
+  MetadataSelection,
+  MetadataFieldName,
 } from './types.js';
 import { formatFileSize, formatDuration } from './metadata.js';
+import { compareMetadataFields } from './auto-decider.js';
 
 export interface ReviewOptions {
   label?: string;
@@ -234,11 +238,11 @@ async function promptForDecision(
       notDuplicates: false,
       decisionType: 'manual',
       ruleApplied: 'manual',
-    copyToDestination: false,
+      copyToDestination: false,
     };
   }
 
-  return {
+  let decision: ExtendedDecision = {
     groupId: group.id,
     keep: [keepPath],
     delete: deletePaths,
@@ -246,7 +250,187 @@ async function promptForDecision(
     decisionType: 'manual',
     ruleApplied: 'manual',
     copyToDestination: false,
+    needsMetadataReview: true,
   };
+
+  decision = await promptForMetadataSelection(decision, files);
+
+  return decision;
+}
+
+function displayMetadataComparison(
+  comparison: MetadataComparison,
+  keepFile: AudioFileMetadata,
+  deleteFile: AudioFileMetadata
+): void {
+  console.log(chalk.cyan('\nMetadata Differences:'));
+  console.log(chalk.gray('─'.repeat(60)));
+
+  const keepLabel = chalk.green('[KEEP]');
+  const deleteLabel = chalk.red('[DELETE]');
+
+  console.log(`${keepLabel}   ${keepFile.path.split('/').slice(-2).join('/')}`);
+  console.log(`${deleteLabel} ${deleteFile.path.split('/').slice(-2).join('/')}`);
+  console.log();
+
+  for (const diff of comparison.differences) {
+    const fieldName = chalk.yellow(diff.field.padEnd(8));
+    const keepValue = diff.fileA ?? chalk.gray('(empty)');
+    const deleteValue = diff.fileB ?? chalk.gray('(empty)');
+
+    console.log(`${fieldName} ${keepLabel}:   ${keepValue}`);
+    console.log(`         ${deleteLabel}: ${deleteValue}`);
+    console.log();
+  }
+}
+
+async function promptForFieldSelection(
+  field: MetadataFieldName,
+  keepValue: string | number | null,
+  deleteValue: string | number | null,
+  keepPath: string,
+  deletePath: string
+): Promise<string | null> {
+  const keepDisplay = keepValue ?? '(empty)';
+  const deleteDisplay = deleteValue ?? '(empty)';
+
+  const choices = [
+    {
+      name: `[1] ${keepDisplay}`,
+      value: keepPath,
+    },
+    {
+      name: `[2] ${deleteDisplay}`,
+      value: deletePath,
+    },
+    {
+      name: chalk.gray('Skip (keep original)'),
+      value: 'skip',
+    },
+  ];
+
+  const answer = await select({
+    message: `Select ${chalk.yellow(field)} value:`,
+    choices,
+  });
+
+  if (answer === 'skip') {
+    return null;
+  }
+
+  return answer;
+}
+
+export async function promptForMetadataSelection(
+  decision: ExtendedDecision,
+  files: Map<string, AudioFileMetadata>
+): Promise<ExtendedDecision> {
+  const keepPath = decision.keep[0];
+  const deletePath = decision.delete[0];
+
+  const keepFile = files.get(keepPath);
+  const deleteFile = files.get(deletePath);
+
+  if (!keepFile || !deleteFile) {
+    return { ...decision, metadataSource: keepPath };
+  }
+
+  const comparison = compareMetadataFields(keepFile, deleteFile);
+
+  if (comparison.identical) {
+    return { ...decision, metadataSource: keepPath, needsMetadataReview: false };
+  }
+
+  console.log(chalk.yellow(`\n${'─'.repeat(60)}`));
+  console.log(chalk.yellow('Metadata differs between files'));
+
+  displayMetadataComparison(comparison, keepFile, deleteFile);
+
+  const quickChoice = await select({
+    message: 'How would you like to handle the metadata?',
+    choices: [
+      {
+        name: chalk.green('Use all metadata from kept file [1]'),
+        value: 'keep',
+      },
+      {
+        name: chalk.blue('Use all metadata from deleted file [2]'),
+        value: 'delete',
+      },
+      {
+        name: chalk.yellow('Choose per field'),
+        value: 'per-field',
+      },
+      {
+        name: chalk.gray('Skip (keep original)'),
+        value: 'skip',
+      },
+    ],
+  });
+
+  if (quickChoice === 'skip') {
+    return { ...decision, metadataSource: keepPath, needsMetadataReview: false };
+  }
+
+  if (quickChoice === 'keep') {
+    return { ...decision, metadataSource: keepPath, needsMetadataReview: false };
+  }
+
+  if (quickChoice === 'delete') {
+    return { ...decision, metadataSource: deletePath, needsMetadataReview: false };
+  }
+
+  const selection: MetadataSelection = {};
+
+  for (const diff of comparison.differences) {
+    const choice = await promptForFieldSelection(
+      diff.field,
+      diff.fileA,
+      diff.fileB,
+      keepPath,
+      deletePath
+    );
+
+    if (choice) {
+      selection[diff.field] = choice;
+    }
+  }
+
+  const hasSelections = Object.keys(selection).length > 0;
+
+  if (!hasSelections) {
+    return { ...decision, metadataSource: keepPath, needsMetadataReview: false };
+  }
+
+  return { ...decision, metadataSource: selection, needsMetadataReview: false };
+}
+
+export async function reviewMetadataDecisions(
+  decisions: ExtendedDecision[],
+  files: Map<string, AudioFileMetadata>
+): Promise<ExtendedDecision[]> {
+  const result: ExtendedDecision[] = [];
+
+  const needsReview = decisions.filter((d) => d.needsMetadataReview);
+  const noReview = decisions.filter((d) => !d.needsMetadataReview);
+
+  result.push(...noReview);
+
+  if (needsReview.length === 0) {
+    return result;
+  }
+
+  console.log(chalk.cyan(`\nReviewing metadata for ${needsReview.length} pairs`));
+
+  for (let i = 0; i < needsReview.length; i++) {
+    const decision = needsReview[i];
+    console.log(chalk.gray(`\n[${i + 1}/${needsReview.length}]`));
+
+    const updated = await promptForMetadataSelection(decision, files);
+    result.push(updated);
+  }
+
+  return result;
 }
 
 export function summarizeDecisions(decisions: Decision[]): void {
