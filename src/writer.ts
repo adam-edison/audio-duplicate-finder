@@ -1,6 +1,7 @@
-import { extname } from 'node:path';
+import { extname, dirname, basename } from 'node:path';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
+import { rename } from 'node:fs/promises';
 import NodeID3 from 'node-id3';
 import type { MusicMetadata } from './types.js';
 
@@ -12,6 +13,38 @@ async function checkFfmpeg(): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+interface ProbeResult {
+  codec: string;
+  correctExtension: string;
+}
+
+const CODEC_TO_EXTENSION: Record<string, string> = {
+  opus: '.opus',
+  vorbis: '.ogg',
+  aac: '.m4a',
+  mp3: '.mp3',
+  flac: '.flac',
+  alac: '.m4a',
+  pcm_s16le: '.wav',
+  pcm_s24le: '.wav',
+  pcm_s32le: '.wav',
+};
+
+async function probeCodec(filePath: string): Promise<ProbeResult> {
+  const escapedPath = filePath.replace(/'/g, "'\\''");
+  const cmd = `ffprobe -v quiet -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 '${escapedPath}'`;
+
+  try {
+    const { stdout } = await execAsync(cmd);
+    const codec = stdout.trim().toLowerCase();
+    const correctExtension = CODEC_TO_EXTENSION[codec] ?? extname(filePath).toLowerCase();
+
+    return { codec, correctExtension };
+  } catch {
+    return { codec: 'unknown', correctExtension: extname(filePath).toLowerCase() };
   }
 }
 
@@ -48,7 +81,14 @@ async function writeWithFfmpeg(filePath: string, metadata: MusicMetadata): Promi
     throw new Error('ffmpeg is required for non-MP3 files. Please install ffmpeg.');
   }
 
-  const tempPath = filePath.replace(/(\.[^.]+)$/, '_temp$1');
+  const { correctExtension } = await probeCodec(filePath);
+  const currentExtension = extname(filePath).toLowerCase();
+  const dir = dirname(filePath);
+  const baseName = basename(filePath, currentExtension);
+
+  const needsRename = correctExtension !== currentExtension;
+  const tempPath = `${dir}/${baseName}_temp${correctExtension}`;
+  const finalPath = needsRename ? `${dir}/${baseName}${correctExtension}` : filePath;
 
   const metadataArgs: string[] = [];
 
@@ -74,7 +114,14 @@ async function writeWithFfmpeg(filePath: string, metadata: MusicMetadata): Promi
   const cmd = `ffmpeg -y -i '${escapedInput}' -c copy ${metadataArgs.map(a => `'${a}'`).join(' ')} '${escapedOutput}'`;
 
   await execAsync(cmd);
-  await execAsync(`mv '${escapedOutput}' '${escapedInput}'`);
+
+  if (needsRename) {
+    await rename(tempPath, finalPath);
+    await execAsync(`rm '${escapedInput}'`);
+    console.log(`  Note: Renamed to ${basename(finalPath)} (correct format for codec)`);
+  } else {
+    await rename(tempPath, filePath);
+  }
 }
 
 export async function writeMetadata(filePath: string, metadata: MusicMetadata): Promise<void> {
