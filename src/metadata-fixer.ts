@@ -7,8 +7,8 @@ import type {
   Cache,
   InferredMetadata,
 } from './types.js';
-import { parseFilename } from './parser.js';
-import { inferMetadataBatch, type BatchFileInfo } from './inference.js';
+import { parseFilename, type ParsedFilename } from './parser.js';
+import { inferMetadata } from './inference.js';
 import { promptForMetadata } from './prompts.js';
 import { writeMetadata } from './writer.js';
 import { loadCache, saveCache, setCacheEntry } from './cache.js';
@@ -18,7 +18,24 @@ export interface FixResult {
   updatedFiles: Map<string, AudioFileMetadata>;
 }
 
-const BATCH_SIZE = 20;
+interface PrefetchedData {
+  file: AudioFileMetadata;
+  missingFields: Array<'artist' | 'genre' | 'title' | 'album'>;
+  parsed: ParsedFilename;
+  inferred: InferredMetadata;
+}
+
+const PREFETCH_COUNT = 3;
+
+async function fetchMetadataForFile(
+  file: AudioFileMetadata,
+  missingFields: Array<'artist' | 'genre' | 'title' | 'album'>
+): Promise<PrefetchedData> {
+  const parsed = parseFilename(file.path);
+  const inferred = await inferMetadata(parsed, [], missingFields);
+
+  return { file, missingFields, parsed, inferred };
+}
 
 export function findFilesWithMissingMetadata(
   files: Map<string, AudioFileMetadata>
@@ -87,56 +104,28 @@ export async function fixMetadataInteractive(
     console.log(chalk.yellow(`Resuming from file ${startIndex + 1}`));
   }
 
-  const filesToProcess = filesWithMissing.slice(startIndex);
+  console.log(chalk.gray('Press Ctrl+C to quit and save progress'));
+  console.log(chalk.gray(`Prefetching ${PREFETCH_COUNT} files ahead\n`));
 
-  console.log(chalk.cyan(`\nBatch analyzing ${filesToProcess.length} files with AI...`));
+  const prefetchCache = new Map<number, Promise<PrefetchedData>>();
 
-  const batchFiles: BatchFileInfo[] = filesToProcess.map((file, idx) => ({
-    index: startIndex + idx,
-    filename: file.filename,
-    parsed: parseFilename(file.path),
-    existingArtist: file.artist,
-    existingTitle: file.title,
-    existingGenre: file.genre,
-    existingAlbum: file.album,
-  }));
-
-  const batches: BatchFileInfo[][] = [];
-
-  for (let i = 0; i < batchFiles.length; i += BATCH_SIZE) {
-    batches.push(batchFiles.slice(i, i + BATCH_SIZE));
-  }
-
-  console.log(chalk.gray(`Split into ${batches.length} batches of up to ${BATCH_SIZE} files each`));
-
-  const inferredResults = new Map<number, InferredMetadata>();
-  const batchPromises: Promise<void>[] = [];
-  let completedBatches = 0;
-
-  const processBatch = async (batchIdx: number): Promise<void> => {
-    const batch = batches[batchIdx];
-    const batchResults = await inferMetadataBatch(batch);
-
-    for (const [idx, result] of batchResults) {
-      inferredResults.set(idx, result);
+  const startPrefetch = (index: number): void => {
+    if (index >= filesWithMissing.length) {
+      return;
     }
 
-    completedBatches++;
+    if (prefetchCache.has(index)) {
+      return;
+    }
+
+    const file = filesWithMissing[index];
+    const missingFields = getMissingFields(file);
+    prefetchCache.set(index, fetchMetadataForFile(file, missingFields));
   };
 
-  const firstBatchSpinner = ora(`Batch 1/${batches.length}: Analyzing ${batches[0].length} files...`).start();
-  await processBatch(0);
-  firstBatchSpinner.succeed(`Batch 1/${batches.length}: Done (${batches[0].length} files)`);
-
-  for (let batchIdx = 1; batchIdx < batches.length; batchIdx++) {
-    batchPromises.push(processBatch(batchIdx));
+  for (let i = startIndex; i < Math.min(startIndex + PREFETCH_COUNT, filesWithMissing.length); i++) {
+    startPrefetch(i);
   }
-
-  if (batches.length > 1) {
-    console.log(chalk.gray(`Remaining ${batches.length - 1} batches processing in background...`));
-  }
-
-  console.log(chalk.gray('Press Ctrl+C to quit and save progress\n'));
 
   for (let i = startIndex; i < filesWithMissing.length; i++) {
     const file = filesWithMissing[i];
@@ -145,34 +134,25 @@ export async function fixMetadataInteractive(
     console.log(
       chalk.yellow(`\nFile ${i + 1} of ${filesWithMissing.length}`)
     );
-
-    if (completedBatches < batches.length) {
-      console.log(chalk.gray(`AI batches: ${completedBatches}/${batches.length} complete`));
-    }
-
     console.log(chalk.gray(`Missing: ${missingFields.join(', ')}`));
 
-    let inferred = inferredResults.get(i);
+    let prefetched: PrefetchedData;
+    const prefetchPromise = prefetchCache.get(i);
 
-    if (!inferred) {
-      const spinner = ora('Waiting for AI batch to complete...').start();
-
-      while (!inferredResults.has(i)) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
-      }
-
+    if (prefetchPromise) {
+      const spinner = ora('Loading...').start();
+      prefetched = await prefetchPromise;
       spinner.stop();
-      inferred = inferredResults.get(i);
+      prefetchCache.delete(i);
+    } else {
+      const spinner = ora('Analyzing with AI...').start();
+      prefetched = await fetchMetadataForFile(file, missingFields);
+      spinner.stop();
     }
 
-    inferred = inferred ?? {
-      artist: null,
-      title: null,
-      genre: null,
-      album: null,
-      confidence: 'low' as const,
-      source: 'No inference available',
-    };
+    for (let j = i + 1; j <= i + PREFETCH_COUNT; j++) {
+      startPrefetch(j);
+    }
 
     const existingMetadata: Partial<MusicMetadata> = {
       artist: file.artist ?? undefined,
@@ -183,7 +163,7 @@ export async function fixMetadataInteractive(
 
     const result = await promptForMetadata(
       file.filename,
-      inferred,
+      prefetched.inferred,
       missingFields,
       existingMetadata,
       cache
@@ -237,7 +217,6 @@ export async function fixMetadataInteractive(
     }
   }
 
-  await Promise.all(batchPromises);
   await saveCache(cache);
 
   console.log(chalk.cyan('\n' + '─'.repeat(60)));
