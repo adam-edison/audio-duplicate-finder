@@ -22,7 +22,22 @@ export async function loadRules(): Promise<DuplicateRules | null> {
   try {
     const data = await readFile(CONFIG_FILE, 'utf-8');
     const config = JSON.parse(data);
-    return config.duplicateRules ?? null;
+    const rules = config.duplicateRules;
+
+    if (!rules) {
+      return null;
+    }
+
+    if (!rules.weights) {
+      return {
+        confidenceThreshold: rules.confidenceThreshold ?? DEFAULT_RULES.confidenceThreshold,
+        scoreDifferenceThreshold: rules.scoreDifferenceThreshold ?? DEFAULT_RULES.scoreDifferenceThreshold,
+        weights: DEFAULT_RULES.weights,
+        pathPriority: rules.pathPriority ?? [],
+      };
+    }
+
+    return rules;
   } catch {
     return null;
   }
