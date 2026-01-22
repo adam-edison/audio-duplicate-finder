@@ -1,7 +1,7 @@
 import { extname, dirname, basename } from 'node:path';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
-import { rename } from 'node:fs/promises';
+import { rename, unlink } from 'node:fs/promises';
 import NodeID3 from 'node-id3';
 import type { MusicMetadata } from './types.js';
 
@@ -90,26 +90,28 @@ async function writeWithFfmpeg(filePath: string, metadata: MusicMetadata): Promi
   const tempPath = `${dir}/${baseName}_temp${correctExtension}`;
   const finalPath = needsRename ? `${dir}/${baseName}${correctExtension}` : filePath;
 
+  const escapeShell = (str: string): string => str.replace(/'/g, "'\\''");
+
   const metadataArgs: string[] = [];
 
   if (metadata.artist) {
-    metadataArgs.push('-metadata', `artist=${metadata.artist}`);
+    metadataArgs.push('-metadata', `artist=${escapeShell(metadata.artist)}`);
   }
 
   if (metadata.title) {
-    metadataArgs.push('-metadata', `title=${metadata.title}`);
+    metadataArgs.push('-metadata', `title=${escapeShell(metadata.title)}`);
   }
 
   if (metadata.genre) {
-    metadataArgs.push('-metadata', `genre=${metadata.genre}`);
+    metadataArgs.push('-metadata', `genre=${escapeShell(metadata.genre)}`);
   }
 
   if (metadata.album) {
-    metadataArgs.push('-metadata', `album=${metadata.album}`);
+    metadataArgs.push('-metadata', `album=${escapeShell(metadata.album)}`);
   }
 
-  const escapedInput = filePath.replace(/'/g, "'\\''");
-  const escapedOutput = tempPath.replace(/'/g, "'\\''");
+  const escapedInput = escapeShell(filePath);
+  const escapedOutput = escapeShell(tempPath);
 
   const cmd = `ffmpeg -y -i '${escapedInput}' -c copy ${metadataArgs.map(a => `'${a}'`).join(' ')} '${escapedOutput}'`;
 
@@ -117,7 +119,7 @@ async function writeWithFfmpeg(filePath: string, metadata: MusicMetadata): Promi
 
   if (needsRename) {
     await rename(tempPath, finalPath);
-    await execAsync(`rm '${escapedInput}'`);
+    await unlink(filePath);
     console.log(`  Note: Renamed to ${basename(finalPath)} (correct format for codec)`);
   } else {
     await rename(tempPath, filePath);
