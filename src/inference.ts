@@ -1,4 +1,7 @@
-import { execSync } from 'node:child_process';
+import { exec } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execAsync = promisify(exec);
 import type { InferredMetadata } from './types.js';
 import type { SearchResult } from './search.js';
 import type { ParsedFilename } from './parser.js';
@@ -78,13 +81,13 @@ Respond with a JSON array only, no other text:
 ]`;
 
   try {
-    const output = execSync(`claude -p ${JSON.stringify(prompt)}`, {
+    const { stdout } = await execAsync(`claude -p ${JSON.stringify(prompt)}`, {
       encoding: 'utf-8',
       maxBuffer: 10 * 1024 * 1024,
       timeout: 120000,
     });
 
-    const jsonMatch = output.match(/\[[\s\S]*\]/);
+    const jsonMatch = stdout.match(/\[[\s\S]*\]/);
 
     if (!jsonMatch) {
       throw new Error('No JSON array found in response');
@@ -160,12 +163,12 @@ Respond in this exact JSON format only, no other text:
 }`;
 
   try {
-    const output = execSync(`claude -p ${JSON.stringify(prompt)}`, {
+    const { stdout } = await execAsync(`claude -p ${JSON.stringify(prompt)}`, {
       encoding: 'utf-8',
       maxBuffer: 1024 * 1024,
     });
 
-    const jsonMatch = output.match(/\{[\s\S]*\}/);
+    const jsonMatch = stdout.match(/\{[\s\S]*\}/);
 
     if (!jsonMatch) {
       throw new Error('No JSON found in response');
